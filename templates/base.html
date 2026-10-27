@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{% block title %}B3906{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='b3906.css') }}">
+</head>
+<body>
+  <header class="site-header b3906-header">
+    <a class="b3906-brand" href="{{ url_for('index') }}" aria-label="B3906 首页">
+      <span>B3906</span>
+    </a>
+    <nav class="b3906-nav" aria-label="站点导航">
+      {% if request.endpoint != 'index' %}<a href="{{ url_for('index') }}">软件仓库</a>{% endif %}
+      {% if session.get('is_admin') %}
+        <a href="{{ url_for('admin_software') }}">管理台</a>
+      {% else %}
+        <a href="{{ url_for('login') }}">管理</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="flash-stack" aria-live="polite">
+        {% for category, message in messages %}<div class="flash {{ category }}">{{ message }}</div>{% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <main>{% block content %}{% endblock %}</main>
+  <footer class="site-footer b3906-footer"><strong>B3906</strong><span>Internal software repository</span></footer>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

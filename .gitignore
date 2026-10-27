@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+data/
+uploads/
+.DS_Store.local/
+data/minio-dev/
+data/minio-dev.env
+
+node_modules/
+.DS_Store
+.upload-staging/
+
+test_password

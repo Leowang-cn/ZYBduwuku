@@ -1,0 +1,13 @@
+Flask==3.1.3
+gunicorn==23.0.0
+requests==2.32.5
+aliyun-log-python-sdk==0.9.36
+fastapi>=0.115,<0.116
+uvicorn>=0.30,<0.35
+python-multipart>=0.0.18,<0.1
+python-dotenv>=1.0,<1.2
+minio>=7.2,<8
+cos-python-sdk-v5>=1.9.38,<2
+
+nh3>=0.2.21,<0.4
+Pillow>=11,<12

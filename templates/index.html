@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}第B3906号仓库{% endblock %}
+{% block content %}
+<section class="repository-intro">
+  <p>INTERNAL SOFTWARE ARCHIVE</p>
+  <h1>第B3906号仓库</h1>
+</section>
+
+<section class="repository-list" aria-label="软件列表">
+  {% for item in software %}
+    {% set view = presentations.get(item.name, {}) %}
+    <article class="repository-product product-{{ view.get('tone', 'ink') }}">
+      <div class="product-mark" aria-hidden="true"><span>{{ view.get('mark', item.name[:2]|upper) }}</span></div>
+      <div class="product-summary">
+        <div class="product-kicker"><span>{{ item.category }}</span><time>{{ item.updated_at|date }} 更新</time></div>
+        <h2>{{ item.name }}</h2>
+        <p class="product-lead">{{ item.summary }}</p>
+        {% if view.get('announcement') %}<p class="product-notice"><strong>最新</strong>{{ view.announcement }}</p>{% endif %}
+        <div class="platform-row">
+          {% for platform, version in [('Windows', view.get('windows_version', item.version)), ('macOS', view.get('macos_version', item.version))] %}
+            <div class="platform-release">
+              <span class="platform-name">{{ platform }}</span>
+              <span>v{{ version or '—' }}</span>
+              {% if item.stored_name %}<a class="download-icon" href="{{ url_for('download', software_id=item.id) }}" aria-label="下载 {{ item.name }} {{ platform }} 版本" title="下载 {{ platform }} 版本">↓</a>{% else %}<span class="download-icon unavailable" title="安装包准备中">↓</span>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <a class="detail-link" href="{{ url_for('software_detail', software_id=item.id) }}">查看详情 <span>→</span></a>
+      </div>
+    </article>
+  {% else %}
+    <div class="repository-empty">仓库中还没有软件。</div>
+  {% endfor %}
+</section>
+{% endblock %}

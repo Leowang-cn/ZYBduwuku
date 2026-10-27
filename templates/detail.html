@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block title %}{{ item.name }} · B3906{% endblock %}
+{% block content %}
+<article class="b3906-detail product-{{ presentation.get('tone', 'ink') }}">
+  <a class="detail-back" href="{{ url_for('index') }}">← 返回仓库</a>
+
+  <header class="detail-hero">
+    <div class="detail-mark product-mark" aria-hidden="true"><span>{{ presentation.get('mark', item.name[:2]|upper) }}</span></div>
+    <div class="detail-intro">
+      <p class="detail-kicker">{{ item.category }} / DESKTOP</p>
+      <h1>{{ item.name }}</h1>
+      <p class="detail-lead">{{ item.summary }}</p>
+      <p class="detail-description">{{ item.description }}</p>
+      <div class="detail-downloads">
+        {% for platform, version in [('Windows', presentation.get('windows_version', item.version)), ('macOS', presentation.get('macos_version', item.version))] %}
+          {% if item.stored_name %}<a class="platform-download" href="{{ url_for('download', software_id=item.id) }}"><span>{{ platform }}</span><strong>下载 v{{ version }}</strong><b>↓</b></a>{% else %}<span class="platform-download is-disabled"><span>{{ platform }}</span><strong>v{{ version }} 准备中</strong><b>↓</b></span>{% endif %}
+        {% endfor %}
+      </div>
+      <p class="quiet-count">累计下载 {{ item.downloads }} 次 · 最近更新于 {{ item.updated_at|date }}</p>
+    </div>
+  </header>
+
+  <section class="detail-section feature-section" aria-labelledby="feature-title">
+    <div class="section-index"><span>01</span><h2 id="feature-title">它能做什么</h2></div>
+    <div class="feature-list">
+      {% for title, description in presentation.get('features', []) %}<article><span>0{{ loop.index }}</span><h3>{{ title }}</h3><p>{{ description }}</p></article>{% endfor %}
+    </div>
+  </section>
+
+  <section class="detail-section preview-section" aria-labelledby="preview-title">
+    <div class="section-index"><span>02</span><h2 id="preview-title">工作界面</h2></div>
+    <div class="app-preview" role="img" aria-label="{{ item.name }} 软件界面示意">
+      <div class="preview-bar"><i></i><i></i><i></i><strong>{{ item.name }}</strong></div>
+      <aside><b>{{ presentation.get('mark', 'APP') }}</b><span>工作台</span><span>任务记录</span><span>设置</span></aside>
+      <div class="preview-canvas"><div class="preview-heading"><small>当前任务</small><strong>{{ '视频批处理' if item.name == 'Zipvid' else '季度数据整理' }}</strong></div><div class="preview-table"><span></span><span></span><span></span><span></span></div><div class="preview-progress"><i></i></div><div class="preview-result"><b>运行正常</b><span>已完成 68%</span></div></div>
+    </div>
+    {% if item.video_url %}<a class="video-link" href="{{ item.video_url }}" target="_blank" rel="noopener">观看使用视频 ↗</a>{% endif %}
+  </section>
+
+  <section class="detail-section release-section" aria-labelledby="release-title">
+    <div class="section-index"><span>03</span><h2 id="release-title">版本记录</h2></div>
+    <div class="release-list">
+      {% for date, version, platforms, note in presentation.get('releases', []) %}<article><time>{{ date }}</time><strong>v{{ version }}</strong><span>{{ platforms }}</span><p>{{ note }}</p></article>{% endfor %}
+    </div>
+  </section>
+
+  <section class="detail-section review-section" id="comments" aria-labelledby="review-title">
+    <div class="section-index"><span>04</span><h2 id="review-title">评价与留言 <sup>{{ comments|length }}</sup></h2></div>
+    <div class="review-content">
+      <details class="review-compose"><summary>写一条评价 <span>＋</span></summary><form method="post"><label>你的称呼<input name="author" maxlength="40" required placeholder="姓名或花名"></label><label>评价内容<textarea name="content" maxlength="1000" required rows="5" placeholder="使用感受、问题反馈或改进建议"></textarea></label><button type="submit">发布评价</button></form></details>
+      <div class="review-list">
+        {% for comment in comments %}<article><header><strong>{{ comment.author }}</strong><time>{{ comment.created_at|date }}</time></header><p>{{ comment.content }}</p></article>{% else %}<p class="no-reviews">还没有评价。使用之后，欢迎在这里留下真实感受。</p>{% endfor %}
+      </div>
+    </div>
+  </section>
+</article>
+{% endblock %}

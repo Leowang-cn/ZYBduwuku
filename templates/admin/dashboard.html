@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block title %}软件使用数据 · 软件驿站{% endblock %}
+{% block content %}
+<div class="admin-layout">
+  {% include "admin/_nav.html" %}
+  <section class="admin-content usage-dashboard">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">SOFTWARE ANALYTICS</p>
+        <h1>软件使用与效率</h1>
+        <p>历史累计与本周对照；人数按匿名安装 ID 去重，不展示个人明细。</p>
+      </div>
+      <span class="data-source {{ 'live' if metrics.configured else '' }}">
+        {{ 'SLS 实时数据' if metrics.configured else '等待配置' }}
+      </span>
+    </div>
+
+    {% if error %}
+      <div class="error-panel">
+        <strong>暂时无法读取 SLS 数据</strong>
+        <p>{{ error }}</p>
+        <small>请在部署环境配置 SLS Endpoint、Project、Logstore 和只读访问凭据。</small>
+      </div>
+    {% endif %}
+
+    <section class="period-summary" aria-label="整体数据概览">
+      {% for key, label in (("history", "历史累计"), ("week", "本周")) %}
+        {% set period = metrics.totals[key] %}
+        <article class="period-block">
+          <div class="period-heading">
+            <div>
+              <p class="eyebrow">{{ 'ALL TIME' if key == 'history' else 'THIS WEEK' }}</p>
+              <h2>{{ label }}</h2>
+            </div>
+            {% if key == "week" and metrics.week_start %}<small>{{ metrics.week_start }} 起</small>{% endif %}
+          </div>
+          <dl>
+            <div><dt>{{ period.user_count }}</dt><dd>使用人数</dd></div>
+            <div><dt>{{ period.usage_count }}</dt><dd>使用次数</dd></div>
+            <div><dt>{{ period.task_count }}</dt><dd>任务量</dd></div>
+            <div><dt>{{ period.saved_seconds|duration }}</dt><dd>成功任务节约时间</dd></div>
+          </dl>
+        </article>
+      {% endfor %}
+    </section>
+
+    <section class="software-breakdown">
+      <div class="breakdown-heading">
+        <div><p class="eyebrow">BY APPLICATION</p><h2>各软件明细</h2></div>
+        <p>使用次数按任务开始事件计算；zipvid 的节约时间为成功任务实际耗时的 50%。</p>
+      </div>
+      <div class="table-wrap analytics-table-wrap">
+        <table class="analytics-table">
+          <thead>
+            <tr>
+              <th rowspan="2">软件</th>
+              <th colspan="6">历史累计</th>
+              <th colspan="6">本周</th>
+            </tr>
+            <tr>
+              {% for _ in (1, 2) %}
+                <th>人数</th><th>次数</th><th>任务</th><th>节约时间</th><th>成功</th><th>失败</th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in metrics.applications %}
+              <tr>
+                <th scope="row"><strong>{{ item.app_id }}</strong><small>app_id</small></th>
+                {% for period in (item.history, item.week) %}
+                  <td>{{ period.user_count }}</td>
+                  <td>{{ period.usage_count }}</td>
+                  <td>{{ period.task_count }}</td>
+                  <td class="saved-time">{{ period.saved_seconds|duration }}</td>
+                  <td><strong class="success-value">{{ period.success_count }}</strong><small>{{ period.success_rate }}%</small></td>
+                  <td><strong class="failure-value">{{ period.failure_count }}</strong><small>{{ period.failure_rate }}%</small></td>
+                {% endfor %}
+              </tr>
+            {% else %}
+              <tr><td class="empty-table" colspan="13">当前范围内暂无软件使用数据</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="metric-note">成功/失败比例以完成事件为分母；“历史累计”受 SLS 日志保存周期限制。</p>
+  </section>
+</div>
+{% endblock %}

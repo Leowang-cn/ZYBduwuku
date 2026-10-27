@@ -1,0 +1,17 @@
+@font-face {
+  font-family: 'Duwuku Brand';
+  src: url('./fonts/brand-noto-sans-sc-900.ttf') format('truetype');
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  unicode-range: U+5E93, U+675C, U+6B66;
+}
+
+.brand-name {
+  font-family: 'Duwuku Brand', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 27px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  line-height: 1.2;
+  color: #493068;
+}

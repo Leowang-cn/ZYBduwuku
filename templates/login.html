@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}管理员登录 · 软件驿站{% endblock %}
+{% block content %}
+<section class="login-shell"><form class="login-panel" method="post"><span class="brand-mark large">软</span><p class="eyebrow">ADMIN ACCESS</p><h1>管理入口</h1><p>上传软件与查看使用数据。</p><label>管理密码<input name="password" type="password" required autofocus autocomplete="current-password"></label><button class="button primary wide" type="submit">进入管理台</button><a href="{{ url_for('index') }}">返回软件库</a></form></section>
+{% endblock %}
