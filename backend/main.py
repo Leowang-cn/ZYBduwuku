@@ -22,7 +22,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from backend import storage
-from backend.richtext import clean_rich
+from backend.richtext import clean_rich, meaningful_rich
 from PIL import Image, UnidentifiedImageError
 from io import BytesIO
 
@@ -133,6 +133,10 @@ def init_db():
         c.execute("INSERT OR IGNORE INTO solution_products(solution_id,product_id) SELECT id,product_id FROM solutions WHERE product_id IS NOT NULL")
         c.execute("CREATE INDEX IF NOT EXISTS idx_solution_products_product ON solution_products(product_id,solution_id)")
         c.execute("CREATE TABLE IF NOT EXISTS feedback_files(id INTEGER PRIMARY KEY AUTOINCREMENT,feedback_id INTEGER NOT NULL REFERENCES feedback(id) ON DELETE CASCADE,object_key TEXT NOT NULL,filename TEXT NOT NULL,content_type TEXT NOT NULL)")
+        c.execute("CREATE TABLE IF NOT EXISTS solution_media(id INTEGER PRIMARY KEY AUTOINCREMENT,solution_id INTEGER REFERENCES solutions(id) ON DELETE CASCADE,draft_token_hash TEXT,expires_at TEXT,object_key TEXT NOT NULL,filename TEXT NOT NULL,content_type TEXT NOT NULL)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_solution_media_expiry ON solution_media(solution_id,expires_at)")
+        if "tags" not in {item["name"] for item in c.execute("PRAGMA table_info(solutions)")}:
+            c.execute("ALTER TABLE solutions ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
         c.execute("CREATE TABLE IF NOT EXISTS expired_media_cleanup(object_key TEXT PRIMARY KEY)")
         c.execute("CREATE TABLE IF NOT EXISTS product_media(id INTEGER PRIMARY KEY AUTOINCREMENT,product_id INTEGER REFERENCES products(id) ON DELETE CASCADE,draft_token_hash TEXT,expires_at TEXT,object_key TEXT NOT NULL,filename TEXT NOT NULL,content_type TEXT NOT NULL)")
         media_columns = {item["name"]: item for item in c.execute("PRAGMA table_info(product_media)")}
@@ -295,14 +299,17 @@ def health():
 def bootstrap():
     products = rows("SELECT * FROM products WHERE published=1 ORDER BY CASE WHEN featured_slot>0 THEN 0 ELSE 1 END,featured_slot,id DESC")
     for product in products:
-        product["solutions"] = rows("SELECT s.id,s.title,s.category FROM solutions s JOIN solution_products sp ON sp.solution_id=s.id WHERE sp.product_id=? AND s.status='approved' ORDER BY (SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) DESC,s.created_at DESC", (product["id"],))
+        product["solutions"] = rows("SELECT s.id,s.title,s.tags,s.category FROM solutions s JOIN solution_products sp ON sp.solution_id=s.id WHERE sp.product_id=? AND s.status='approved' ORDER BY (SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) DESC,s.created_at DESC", (product["id"],))
+        for solution in product["solutions"]:
+            solution["tags"] = json.loads(solution["tags"])
         public_product(product)
     solution_links = rows("SELECT sp.solution_id,p.name FROM solution_products sp JOIN products p ON p.id=sp.product_id JOIN solutions s ON s.id=sp.solution_id WHERE s.status='approved' AND p.published=1")
     links_by_solution = {}
     for link in solution_links:
         links_by_solution.setdefault(link["solution_id"], []).append(link["name"])
-    solutions = rows("SELECT s.id,s.title,s.body,s.category,s.product_id,s.author,s.created_at,s.featured_slot,p.name AS product_name,(SELECT count(*) FROM comments c WHERE c.solution_id=s.id AND c.status='approved') AS comments,(SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) AS likes FROM solutions s LEFT JOIN products p ON p.id=s.product_id WHERE s.status='approved' ORDER BY likes DESC,s.created_at DESC LIMIT 100")
+    solutions = rows("SELECT s.id,s.title,s.body,s.tags,s.category,s.product_id,s.author,s.created_at,s.featured_slot,p.name AS product_name,(SELECT count(*) FROM comments c WHERE c.solution_id=s.id AND c.status='approved') AS comments,(SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) AS likes FROM solutions s LEFT JOIN products p ON p.id=s.product_id WHERE s.status='approved' ORDER BY likes DESC,s.created_at DESC LIMIT 100")
     for solution in solutions:
+        solution["tags"] = json.loads(solution["tags"])
         solution["likes"] = row("SELECT count(*) n FROM solution_likes WHERE solution_id=?", (solution["id"],))["n"]
         solution["product_names"] = links_by_solution.get(solution["id"], [])
     feedback = [{**item, "files": rows("SELECT id,filename FROM feedback_files WHERE feedback_id=?", (item["id"],)), "likes": row("SELECT count(*) n FROM feedback_votes WHERE feedback_id=?", (item["id"],))["n"], "comments": rows("SELECT id,parent_id,body,nickname,created_at FROM feedback_comments WHERE feedback_id=? AND status='approved' ORDER BY id", (item["id"],))} for item in rows("SELECT f.id,f.product_id,f.body,f.nickname,f.created_at,p.name product_name FROM feedback f JOIN products p ON p.id=f.product_id WHERE f.status='approved' ORDER BY f.id DESC LIMIT 100")]
@@ -311,8 +318,9 @@ def bootstrap():
 
 @app.get("/api/solutions/{sid}")
 def solution_detail(sid: int):
-    item = row("SELECT s.id,s.title,s.body,s.category,s.author,s.created_at FROM solutions s WHERE s.id=? AND s.status='approved'", (sid,))
+    item = row("SELECT s.id,s.title,s.body,s.tags,s.category,s.author,s.created_at FROM solutions s WHERE s.id=? AND s.status='approved'", (sid,))
     if not item: raise HTTPException(404, "内容不存在")
+    item["tags"] = json.loads(item["tags"])
     item["products"] = rows("SELECT p.id,p.name,p.summary,p.category,p.icon,p.icon_object_key,p.icon_filename FROM products p JOIN solution_products sp ON sp.product_id=p.id WHERE sp.solution_id=? AND p.published=1 ORDER BY p.name", (sid,))
     for product in item["products"]:
         product["icon_image_url"] = f"/api/product-icons/{product['id']}" if product["icon_object_key"] else ""
@@ -420,7 +428,7 @@ def admin_data(request: Request):
     require_admin(request)
     products = [public_product(p, admin=True) for p in rows("SELECT * FROM products ORDER BY id DESC")]
     feedback_items = [{**f,"files":rows("SELECT id,filename FROM feedback_files WHERE feedback_id=?",(f["id"],)),"comments":[{**comment,"files":rows("SELECT id,filename FROM feedback_comment_files WHERE comment_id=?",(comment["id"],))} for comment in rows("SELECT id,parent_id,body,nickname,status,created_at,ip FROM feedback_comments WHERE feedback_id=? ORDER BY id",(f["id"],))]} for f in rows("SELECT f.*,p.name product_name FROM feedback f JOIN products p ON p.id=f.product_id ORDER BY f.id DESC")]
-    return {"products": products, "solutions": [{**s, "product_ids": [link["product_id"] for link in rows("SELECT product_id FROM solution_products WHERE solution_id=? ORDER BY product_id", (s["id"],))]} for s in rows("SELECT s.*,p.name product_name FROM solutions s LEFT JOIN products p ON p.id=s.product_id ORDER BY s.id DESC")], "feedback": feedback_items, "comments": rows("SELECT c.*,s.title solution_title FROM comments c JOIN solutions s ON s.id=c.solution_id ORDER BY c.id DESC"), "articles": rows("SELECT * FROM articles ORDER BY id DESC"), "categories": [x["name"] for x in rows("SELECT name FROM categories ORDER BY name")], "taxonomies": rows("SELECT kind,name FROM taxonomies WHERE kind IN ('platform','type') ORDER BY kind,name"), "stats": {"products": row("SELECT count(*) n FROM products")["n"], "published": row("SELECT count(*) n FROM products WHERE published=1")["n"], "pending": row("SELECT count(*) n FROM solutions WHERE status='pending'")["n"], "feedback": row("SELECT count(*) n FROM feedback")["n"], "downloads": row("SELECT count(*) n FROM events WHERE kind='download'")["n"], "external_clicks": row("SELECT count(*) n FROM events WHERE kind='external'")["n"], "trend": rows("SELECT substr(created_at,1,10) day,kind,count(*) count FROM events WHERE created_at>=date('now','-13 days') GROUP BY day,kind ORDER BY day")}}
+    return {"products": products, "solutions": [{**s, "files": rows("SELECT id,filename,content_type FROM solution_files WHERE solution_id=?", (s["id"],)), "tags": json.loads(s["tags"]), "product_ids": [link["product_id"] for link in rows("SELECT product_id FROM solution_products WHERE solution_id=? ORDER BY product_id", (s["id"],))]} for s in rows("SELECT s.*,p.name product_name FROM solutions s LEFT JOIN products p ON p.id=s.product_id ORDER BY s.id DESC")], "feedback": feedback_items, "comments": rows("SELECT c.*,s.title solution_title FROM comments c JOIN solutions s ON s.id=c.solution_id ORDER BY c.id DESC"), "articles": rows("SELECT * FROM articles ORDER BY id DESC"), "categories": [x["name"] for x in rows("SELECT name FROM categories ORDER BY name")], "taxonomies": rows("SELECT kind,name FROM taxonomies WHERE kind IN ('platform','type') ORDER BY kind,name"), "stats": {"products": row("SELECT count(*) n FROM products")["n"], "published": row("SELECT count(*) n FROM products WHERE published=1")["n"], "pending": row("SELECT count(*) n FROM solutions WHERE status='pending'")["n"], "feedback": row("SELECT count(*) n FROM feedback")["n"], "downloads": row("SELECT count(*) n FROM events WHERE kind='download'")["n"], "external_clicks": row("SELECT count(*) n FROM events WHERE kind='external'")["n"], "trend": rows("SELECT substr(created_at,1,10) day,kind,count(*) count FROM events WHERE created_at>=date('now','-13 days') GROUP BY day,kind ORDER BY day")}}
 
 
 class ProductInput(BaseModel):
@@ -672,7 +680,11 @@ def cleanup_expired_draft_media():
     with db() as c:
         objects = c.execute("SELECT object_key FROM product_media WHERE product_id IS NULL AND expires_at<=?", (now(),)).fetchall()
         c.execute("DELETE FROM product_media WHERE product_id IS NULL AND expires_at<=?", (now(),))
-        retry = c.execute("SELECT object_key FROM expired_media_cleanup").fetchall()
+        drafts = c.execute("SELECT id,object_key FROM solution_media WHERE solution_id IS NULL AND expires_at<=? LIMIT 100", (now(),)).fetchall()
+        for draft in drafts:
+            c.execute("INSERT OR IGNORE INTO expired_media_cleanup(object_key) VALUES(?)", (draft["object_key"],))
+            c.execute("DELETE FROM solution_media WHERE id=?", (draft["id"],))
+        retry = c.execute("SELECT object_key FROM expired_media_cleanup LIMIT 100").fetchall()
     for item in objects:
         with db() as c:
             c.execute("INSERT OR IGNORE INTO expired_media_cleanup(object_key) VALUES(?)", (item["object_key"],))
@@ -756,6 +768,44 @@ async def admin_upload(request: Request,file: UploadFile=File(...), kind: str=Fo
     write("INSERT INTO uploaded_objects VALUES(?,?)",(key,name))
     return {"object_key":key,"filename":name}
 
+@app.post("/api/admin/solutions/{sid}")
+def edit_solution(sid: int, request: Request, title: str = Form(...), body: str = Form(...), category: str = Form(""), author: str = Form(""), tags: list[str] = Form([]), product_ids: list[int] = Form([]), draft_token: str = Form("")):
+    require_admin(request)
+    if not 4 <= len(title.strip()) <= 200 or len(body) > 30000:
+        raise HTTPException(400, "标题须为 4–200 字，正文不超过 30000 字")
+    body = clean_rich(body)
+    if not meaningful_rich(body):
+        raise HTTPException(400, "正文内容不足")
+    normalized = list(dict.fromkeys(tag.strip() for tag in tags))
+    if len(normalized) > 20 or any(not tag or len(tag) > 30 or any(ord(c) < 32 or ord(c) == 127 for c in tag) for tag in normalized):
+        raise HTTPException(400, "最多 20 个标签，每个须为 1 至 30 字")
+    digest = solution_token_hash(draft_token) if draft_token else None
+    with db() as c:
+        c.execute("BEGIN IMMEDIATE")
+        if not c.execute("SELECT id FROM solutions WHERE id=?", (sid,)).fetchone():
+            raise HTTPException(404, "方案不存在")
+        ids = sorted(set(product_ids))
+        if any(not c.execute("SELECT id FROM products WHERE id=?", (pid,)).fetchone() for pid in ids):
+            raise HTTPException(400, "关联产品不存在")
+        image_ids = set()
+        def link_image(match):
+            token, mid = match.group(1), int(match.group(2))
+            if not digest or solution_token_hash(token) != digest or not c.execute("SELECT id FROM solution_media WHERE id=? AND solution_id IS NULL AND draft_token_hash=? AND expires_at>?", (mid, digest, now())).fetchone():
+                raise HTTPException(400, "草稿图片不存在或不属于此草稿")
+            image_ids.add(mid)
+            return f'/api/solution-media/{mid}'
+        body = re.sub(r'/api/solution-draft-media/([0-9a-f-]{36})/([1-9][0-9]*)', link_image, body)
+        for mid in set(re.findall(r'/api/solution-media/([1-9][0-9]*)', body)):
+            if int(mid) not in image_ids and not c.execute("SELECT id FROM solution_media WHERE id=? AND solution_id=?", (int(mid), sid)).fetchone():
+                raise HTTPException(400, "图片不属于此方案")
+        c.execute("UPDATE solutions SET title=?,body=?,category=?,author=?,tags=?,product_id=? WHERE id=?", (title.strip(), body, category[:80], author.strip()[:60] or "匿名", json.dumps(normalized, ensure_ascii=False), ids[0] if ids else None, sid))
+        c.execute("DELETE FROM solution_products WHERE solution_id=?", (sid,))
+        c.executemany("INSERT INTO solution_products(solution_id,product_id) VALUES(?,?)", [(sid, pid) for pid in ids])
+        for mid in image_ids:
+            c.execute("UPDATE solution_media SET solution_id=?,draft_token_hash=NULL,expires_at=NULL WHERE id=?", (sid, mid))
+    return {"ok": True}
+
+
 @app.post("/api/admin/solutions/{sid}/products")
 def update_solution_products(sid: int, request: Request, product_ids: list[int]):
     require_admin(request)
@@ -775,7 +825,9 @@ def update_solution_products(sid: int, request: Request, product_ids: list[int])
 def solution_status(sid:int,request:Request,status:str=Form(...),reason:str=Form("")):
     require_admin(request)
     if status not in {"approved","rejected","pending"}: raise HTTPException(400,"无效状态")
-    write("UPDATE solutions SET status=?,reject_reason=? WHERE id=?",(status,reason[:1000],sid)); return {"ok":True}
+    if not row("SELECT id FROM solutions WHERE id=?", (sid,)):
+        raise HTTPException(404, "方案不存在")
+    write("UPDATE solutions SET status=?,reject_reason=?,featured_slot=CASE WHEN ?='approved' THEN featured_slot ELSE 0 END WHERE id=?",(status,reason[:1000],status,sid)); return {"ok":True}
 
 
 @app.post("/api/admin/solutions/{sid}/featured")
@@ -947,15 +999,108 @@ async def feedback(request:Request,product_id:int=Form(...),body:str=Form(...),n
     return {"ok":True}
 
 
+def solution_token_hash(token: str):
+    try:
+        parsed = uuid.UUID(token)
+        if str(parsed) != token.lower():
+            raise ValueError()
+    except ValueError:
+        raise HTTPException(400, "无效草稿令牌")
+    return hashlib.sha256(str(parsed).encode()).hexdigest()
+
+
+@app.post("/api/solution-media")
+async def upload_solution_media(request: Request, file: UploadFile = File(...), draft_token: str = Form(...)):
+    """Public capability-token image drafts expire after 24 hours."""
+    rate(request, "solution-image", 20)
+    digest = solution_token_hash(draft_token)
+    cleanup_expired_draft_media()
+    formats = {'.png': ('PNG', 'image/png'), '.jpg': ('JPEG', 'image/jpeg'), '.jpeg': ('JPEG', 'image/jpeg'), '.gif': ('GIF', 'image/gif'), '.webp': ('WEBP', 'image/webp')}
+    ext = Path(file.filename or '').suffix.lower()
+    if ext not in formats:
+        raise HTTPException(415, "仅支持 PNG/JPEG/GIF/WebP")
+    content = await file.read(min(MAX_BYTES, 5 * 1024 * 1024) + 1)
+    if len(content) > min(MAX_BYTES, 5 * 1024 * 1024):
+        raise HTTPException(413, "图片最大 5 MB")
+    try:
+        with Image.open(BytesIO(content)) as image:
+            if image.format != formats[ext][0] or image.width * image.height > 25000000:
+                raise ValueError('Invalid image')
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+        raise HTTPException(415, "无效图片或图片尺寸过大")
+    await file.seek(0)
+    key, name = await save_upload(file, set(formats), 5, formats[ext][1])
+    expires = datetime.fromtimestamp(time.time() + 86400, timezone.utc).isoformat()
+    try:
+        mid = write("INSERT INTO solution_media(draft_token_hash,expires_at,object_key,filename,content_type) VALUES(?,?,?,?,?)", (digest, expires, key, name, formats[ext][1]))
+    except Exception:
+        with db() as c:
+            c.execute("INSERT OR IGNORE INTO expired_media_cleanup(object_key) VALUES(?)", (key,))
+        raise
+    return {'id': mid, 'url': f'/api/solution-draft-media/{draft_token.lower()}/{mid}', 'expires_at': expires}
+
+
+@app.get("/api/solution-draft-media/{token}/{mid}")
+def get_solution_draft_media(token: str, mid: int):
+    try:
+        digest = solution_token_hash(token)
+    except HTTPException:
+        raise HTTPException(404, "图片不存在")
+    media = row("SELECT * FROM solution_media WHERE id=? AND solution_id IS NULL AND draft_token_hash=? AND expires_at>?", (mid, digest, now()))
+    if not media:
+        raise HTTPException(404, "图片不存在")
+    response = storage.serve(media['object_key'], media['filename'], media['content_type'], attachment=False)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
+@app.get("/api/solution-media/{mid}")
+def get_solution_media(mid: int, request: Request):
+    media = row("SELECT m.*,s.status FROM solution_media m JOIN solutions s ON s.id=m.solution_id WHERE m.id=?", (mid,))
+    if not media or (media['status'] != 'approved' and not is_admin(request)):
+        raise HTTPException(404, "图片不存在")
+    response = storage.serve(media['object_key'], media['filename'], media['content_type'], attachment=False)
+    response.headers['Cache-Control'] = 'private, no-store'
+    return response
+
+
 @app.post("/api/solutions")
-async def submit_solution(request:Request,title:str=Form(...),body:str=Form(...),category:str=Form(""),product_id:int=Form(0),product_ids:list[int]=Form([]),author:str=Form(""),files:list[UploadFile]=File(default=[])):
+async def submit_solution(request:Request,title:str=Form(...),body:str=Form(...),category:str=Form(""),product_id:int=Form(0),product_ids:list[int]=Form([]),author:str=Form(""),files:list[UploadFile]=File(default=[]),tags:list[str]=Form([]),draft_token:str=Form("")):
     rate(request,"solution",4)
-    if len(title.strip())<4 or len(title)>200 or len(body.strip())<10 or len(body)>30000: raise HTTPException(400,"标题至少 4 字，正文至少 10 字且不超过 30000 字")
+    if len(title.strip())<4 or len(title)>200 or len(body)>30000: raise HTTPException(400,"标题至少 4 字，正文至少 10 字且不超过 30000 字")
+    body = clean_rich(body)
+    if not meaningful_rich(body): raise HTTPException(400, "正文内容不足")
+    normalized_tags = []
+    for tag in tags:
+        tag = tag.strip()
+        if not tag or len(tag) > 30 or any(ord(c) < 32 or ord(c) == 127 for c in tag):
+            raise HTTPException(400, "标签须为 1 至 30 字")
+        if tag not in normalized_tags:
+            normalized_tags.append(tag)
+    if len(normalized_tags) > 20:
+        raise HTTPException(400, "最多 20 个标签")
+    digest = solution_token_hash(draft_token) if draft_token else None
     if len(files)>5: raise HTTPException(400,"最多上传 5 个附件")
     pids=sorted(set(product_ids + ([product_id] if product_id else [])))
     if any(not row("SELECT id FROM products WHERE id=? AND published=1", (pid,)) for pid in pids): raise HTTPException(400,"关联产品不存在")
-    sid=write("INSERT INTO solutions(title,body,category,product_id,author,status,ip,created_at) VALUES(?,?,?,?,?,'pending',?,?)",(title.strip(),body.strip(),category[:80],pids[0] if pids else None,author.strip()[:60] or "匿名",client_ip(request),now()))
-    for pid in pids: write("INSERT INTO solution_products(solution_id,product_id) VALUES(?,?)",(sid,pid))
+    with db() as c:
+        def link_image(match):
+            token, mid = match.group(1), int(match.group(2))
+            if not digest or solution_token_hash(token) != digest:
+                raise HTTPException(400, "图片不属于此草稿")
+            media = c.execute("SELECT id FROM solution_media WHERE id=? AND solution_id IS NULL AND draft_token_hash=? AND expires_at>?", (mid, digest, now())).fetchone()
+            if not media:
+                raise HTTPException(400, "草稿图片不存在或已过期")
+            image_ids.add(mid)
+            return f'/api/solution-media/{mid}'
+        image_ids = set()
+        c.execute("BEGIN IMMEDIATE")
+        body = re.sub(r'/api/solution-draft-media/([0-9a-f-]{36})/([1-9][0-9]*)', link_image, body)
+        sid = c.execute("INSERT INTO solutions(title,body,tags,category,product_id,author,status,ip,created_at) VALUES(?,?,?,?,?,?,'pending',?,?)", (title.strip(),body.strip(),json.dumps(normalized_tags, ensure_ascii=False),category[:80],pids[0] if pids else None,author.strip()[:60] or "匿名",client_ip(request),now())).lastrowid
+        c.executemany("INSERT INTO solution_products(solution_id,product_id) VALUES(?,?)", [(sid, pid) for pid in pids])
+        for mid in image_ids:
+            c.execute("UPDATE solution_media SET solution_id=?,draft_token_hash=NULL,expires_at=NULL WHERE id=?", (sid, mid))
     allowed={".png",".jpg",".jpeg",".webp",".gif",".mp4",".webm",".mov",".pdf",".zip",".txt",".md"}
     for f in files:
         if not f.filename: continue
@@ -981,7 +1126,9 @@ def product_detail(pid:int):
         p=c.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
     product=public_product(dict(p))
     product["feedback"] = [{**f,"files":rows("SELECT id,filename FROM feedback_files WHERE feedback_id=?",(f["id"],)),"likes":row("SELECT count(*) n FROM feedback_votes WHERE feedback_id=?",(f["id"],))["n"],"comments":[{**comment,"files":rows("SELECT id,filename FROM feedback_comment_files WHERE comment_id=?",(comment["id"],))} for comment in rows("SELECT id,parent_id,body,nickname,created_at,ip FROM feedback_comments WHERE feedback_id=? AND status='approved' ORDER BY id",(f["id"],))]} for f in rows("SELECT id,product_id,body,nickname,created_at,ip FROM feedback WHERE product_id=? AND status='approved' ORDER BY id DESC LIMIT 100",(pid,))]
-    product["solutions"]=rows("SELECT s.id,s.title,s.category,(SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) likes FROM solutions s JOIN solution_products sp ON sp.solution_id=s.id WHERE sp.product_id=? AND s.status='approved' ORDER BY likes DESC,s.created_at DESC",(pid,))
+    product["solutions"]=rows("SELECT s.id,s.title,s.tags,s.category,(SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) likes FROM solutions s JOIN solution_products sp ON sp.solution_id=s.id WHERE sp.product_id=? AND s.status='approved' ORDER BY likes DESC,s.created_at DESC",(pid,))
+    for solution in product["solutions"]:
+        solution["tags"] = json.loads(solution["tags"])
     return product
 
 
