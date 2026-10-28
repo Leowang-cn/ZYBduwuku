@@ -26,7 +26,8 @@ os.environ["DATABASE_URL"] = "sqlite:///" + os.path.join(_tmp.name, "data", "tes
 os.environ["SECRET_KEY"] = "test-only-secret-key"
 os.environ["ADMIN_PASSWORD"] = "test-admin-password"
 from fastapi.testclient import TestClient
-from backend.main import app, row, write, hash_password, verify_password, init_db, client_ip
+with patch('dotenv.load_dotenv'):
+    from backend.main import app, row, write, hash_password, verify_password, init_db, client_ip
 from backend import storage
 from starlette.requests import Request
 
@@ -51,6 +52,137 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(created.status_code,200,created.text)
         self.pid=created.json()["id"]
         self.client.cookies.clear()
+
+    def test_admin_edit_solution_preserves_status(self):
+        result = self.client.post('/api/solutions', data={'title': 'Original solution', 'body': 'Original meaningful body'})
+        sid = result.json()['id']
+        payload = {'title': 'Updated solution', 'body': '<!--portal-rich--><h2>Updated rich content</h2>', 'tags': [' custom ', 'custom'], 'product_ids': [self.pid], 'author': 'Editor'}
+        self.assertEqual(self.client.post(f'/api/admin/solutions/{sid}', data=payload).status_code, 401)
+        headers = self.login()
+        for status in ('pending', 'approved', 'rejected'):
+            self.client.post(f'/api/admin/solutions/{sid}/status', headers=headers, data={'status': status})
+            response = self.client.post(f'/api/admin/solutions/{sid}', headers=headers, data=payload)
+            self.assertEqual(response.status_code, 200, response.text)
+            saved = row('SELECT title,body,tags,status FROM solutions WHERE id=?', (sid,))
+            self.assertEqual(saved['title'], 'Updated solution')
+            self.assertIn('<h2>', saved['body'])
+            self.assertEqual(saved['tags'], '["custom"]')
+            self.assertEqual(saved['status'], status)
+        self.assertEqual(self.client.post(f'/api/admin/solutions/{sid}', headers=headers, data={**payload, 'product_ids': [999999]}).status_code, 400)
+        self.assertEqual(self.client.post('/api/admin/solutions/999999', headers=headers, data=payload).status_code, 404)
+
+    def test_admin_solution_preview_includes_private_body_and_attachments(self):
+        result = self.client.post('/api/solutions', data={'title': 'Preview solution', 'body': '## Full preview\n\n**Complete content**', 'tags': ['preview'], 'product_ids': [self.pid]}, files={'files': ('guide.txt', b'attachment preview', 'text/plain')})
+        self.assertEqual(result.status_code, 200, result.text)
+        sid = result.json()['id']
+        self.assertEqual(self.client.get(f'/api/solutions/{sid}').status_code, 404)
+        self.assertEqual(self.client.get('/api/admin/data').status_code, 401)
+        self.login()
+        item = next(s for s in self.client.get('/api/admin/data').json()['solutions'] if s['id'] == sid)
+        self.assertEqual(item['status'], 'pending')
+        self.assertIn('**Complete content**', item['body'])
+        self.assertEqual(item['tags'], ['preview'])
+        self.assertEqual(item['product_ids'], [self.pid])
+        self.assertEqual(item['files'][0]['filename'], 'guide.txt')
+        self.assertEqual(item['files'][0]['content_type'], 'text/plain')
+        url = f"/api/files/{item['files'][0]['id']}"
+        self.assertEqual(self.client.get(url, follow_redirects=False).status_code, 307)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_solution_rich_tags_and_legacy_migration(self):
+        from backend.main import db
+        from backend.richtext import RICH_PREFIX
+        def submit(body, tags=None):
+            write("DELETE FROM settings WHERE key LIKE 'rate:%'")
+            return self.client.post('/api/solutions', data={'title': 'Rich solution', 'body': body, **({'tags': tags} if tags is not None else {})})
+        markdown = '## Markdown\n\n**Preserved text**'
+        result = submit(markdown, [' alpha ', 'beta', 'alpha'])
+        self.assertEqual(result.status_code, 200, result.text)
+        sid = result.json()['id']
+        self.assertEqual(row('SELECT body,tags FROM solutions WHERE id=?', (sid,)), {'body': markdown, 'tags': '["alpha", "beta"]'})
+        h = self.login()
+        admin = next(s for s in self.client.get('/api/admin/data').json()['solutions'] if s['id'] == sid)
+        self.assertEqual(admin['tags'], ['alpha', 'beta'])
+        self.client.post(f'/api/admin/solutions/{sid}/status', headers=h, data={'status': 'approved'})
+        self.assertEqual(self.client.get(f'/api/solutions/{sid}').json()['tags'], ['alpha', 'beta'])
+        self.assertEqual(next(s for s in self.client.get('/api/bootstrap').json()['solutions'] if s['id'] == sid)['tags'], ['alpha', 'beta'])
+        for tags in ([' '], ['x' * 31], [str(i) for i in range(21)], ['bad\x00tag']):
+            self.assertEqual(submit(markdown, tags).status_code, 400)
+        self.assertEqual(submit(RICH_PREFIX + '<p><br></p><script>hidden text</script>').status_code, 400)
+        result = submit(RICH_PREFIX + '<p onclick="bad()">Meaningful visible content</p><script>evil()</script><img src="javascript:bad()">')
+        self.assertEqual(result.status_code, 200, result.text)
+        saved = row('SELECT body FROM solutions WHERE id=?', (result.json()['id'],))['body']
+        for forbidden in ('onclick', '<script', 'javascript:'):
+            self.assertNotIn(forbidden, saved)
+        legacy = submit(markdown).json()['id']
+        with db() as c:
+            c.execute('ALTER TABLE solutions DROP COLUMN tags')
+        init_db()
+        init_db()
+        self.assertEqual(row('SELECT tags FROM solutions WHERE id=?', (legacy,))['tags'], '[]')
+
+    def test_solution_image_ownership_approval_and_expiry(self):
+        import uuid
+        from backend.main import cleanup_expired_draft_media
+        from backend.richtext import RICH_PREFIX
+        token, other = str(uuid.uuid4()), str(uuid.uuid4())
+        from io import BytesIO
+        from PIL import Image
+        buffer = BytesIO()
+        Image.new('RGB', (1, 1)).save(buffer, format='PNG')
+        image = buffer.getvalue()
+        def upload(token=token, content=image, name='image.png'):
+            return self.client.post('/api/solution-media', data={'draft_token': token}, files={'file': (name, content, 'image/png')})
+        self.assertEqual(upload(token='-' * 36).status_code, 400)
+        self.assertEqual(upload(content=b'fake').status_code, 415)
+        broken = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=')
+        self.assertEqual(upload(content=broken).status_code, 415)
+        oversized = MagicMock()
+        oversized.__enter__.return_value = oversized
+        oversized.format, oversized.width, oversized.height = 'PNG', 5001, 5000
+        with patch('backend.main.Image.open', return_value=oversized):
+            self.assertEqual(upload().status_code, 415)
+        self.assertEqual(upload(name='image.svg').status_code, 415)
+        self.assertEqual(upload(content=b'x' * (5 * 1024 * 1024 + 1)).status_code, 413)
+        first, unused = upload(), upload()
+        self.assertEqual(first.status_code, 200, first.text)
+        first, unused = first.json(), unused.json()
+        url, mid = first['url'], first['id']
+        self.assertEqual(self.client.get(url, follow_redirects=False).status_code, 307)
+        self.assertEqual(self.client.get(url.replace(token, other)).status_code, 404)
+        def submit(owner):
+            write("DELETE FROM settings WHERE key LIKE 'rate:%'")
+            return self.client.post('/api/solutions', data={'title': 'Image solution', 'body': RICH_PREFIX + f'<p>Image solution text</p><img src="{url}">', 'draft_token': owner})
+        self.assertEqual(submit(other).status_code, 400)
+        self.assertEqual(submit('').status_code, 400)
+        result = submit(token)
+        self.assertEqual(result.status_code, 200, result.text)
+        sid = result.json()['id']
+        final = f'/api/solution-media/{mid}'
+        self.assertIn(final, row('SELECT body FROM solutions WHERE id=?', (sid,))['body'])
+        self.assertIsNone(row('SELECT solution_id FROM solution_media WHERE id=?', (unused['id'],))['solution_id'])
+        self.assertEqual(self.client.get(url).status_code, 404)
+        self.assertEqual(self.client.get(final).status_code, 404)
+        self.assertEqual(submit(token).status_code, 400)
+        h = self.login()
+        self.assertEqual(self.client.get(final, follow_redirects=False).status_code, 307)
+        self.client.post(f'/api/admin/solutions/{sid}/status', headers=h, data={'status': 'approved'})
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(final, follow_redirects=False).status_code, 307)
+        h = self.login()
+        self.client.post(f'/api/admin/solutions/{sid}/status', headers=h, data={'status': 'rejected'})
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(final).status_code, 404)
+        write("UPDATE solution_media SET expires_at='2000-01-01' WHERE id=?", (unused['id'],))
+        self.assertEqual(self.client.get(unused['url']).status_code, 404)
+        url = unused['url']
+        self.assertEqual(submit(token).status_code, 400)
+        cleanup_expired_draft_media()
+        self.assertIsNone(row('SELECT id FROM solution_media WHERE id=?', (unused['id'],)))
+        self.assertEqual(self.client.post('/api/admin/upload', data={'kind': 'rich-image', 'draft_token': token}, files={'file': ('image.png', image, 'image/png')}).status_code, 401)
+        with patch('backend.main.rate', side_effect=__import__('fastapi').HTTPException(429, 'limited')):
+            self.assertEqual(upload().status_code, 429)
 
     def test_deliverable_metadata_roundtrip_and_validation(self):
         h = self.login()
@@ -453,6 +585,23 @@ class PortalTests(unittest.TestCase):
         self.assertEqual(self.client.get(expired['url']).status_code, 404)
         unauthorized = self.client.delete(f'/api/admin/draft-media/{expired_token}')
         self.assertEqual(unauthorized.status_code, 403)
+
+    def test_rich_table_and_media_layout_sanitization(self):
+        from backend.richtext import clean_rich
+        html = '<!--portal-rich--><p style="text-align: center">Centered</p><figure style="text-align: right"><img src="https://example.com/a.png" width="640" style="width: 640px"></figure><video src="https://example.com/a.mp4" width="800" style="text-align: center"></video><table><thead><tr><th>Head</th></tr></thead><tbody><tr><td colspan="2" colwidth="640,320">Cell</td></tr></tbody></table><p style="text-align: center;position:fixed">Unsafe</p>'
+        cleaned = clean_rich(html)
+        self.assertIn('text-align: center', cleaned)
+        self.assertIn('width="640"', cleaned)
+        self.assertIn('width: 640px', cleaned)
+        self.assertIn('<table>', cleaned)
+        self.assertIn('<th>Head</th>', cleaned)
+        self.assertIn('colspan="2"', cleaned)
+        self.assertIn('colwidth="640,320"', cleaned)
+        self.assertNotIn('position:fixed', cleaned)
+        self.assertNotIn('autoplay', cleaned)
+        combined = clean_rich('<!--portal-rich--><img src="https://example.com/a.png" width="640" style="width: 640px; text-align: center">')
+        self.assertIn('width: 640px', combined)
+        self.assertIn('text-align: center', combined)
 
     def test_rich_image_upload_sanitization_binding_and_access(self):
         rich = '<!--portal-rich--><p onclick="bad()">Safe<script>alert(1)</script></p><figure><video controls autoplay width="640" src="https://example.com/demo.mp4"></video><figcaption>Video caption</figcaption></figure><a href="https://example.com/path">link</a>'
