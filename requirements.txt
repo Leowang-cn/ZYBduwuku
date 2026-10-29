@@ -8,6 +8,7 @@ python-multipart>=0.0.18,<0.1
 python-dotenv>=1.0,<1.2
 minio>=7.2,<8
 cos-python-sdk-v5>=1.9.38,<2
+mcp>=1.0,<2
 
 nh3>=0.2.21,<0.4
 Pillow>=11,<12

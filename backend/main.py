@@ -52,7 +52,60 @@ if os.getenv("APP_ENV", "development") == "production":
     if len(SECRET)<32 or len(ADMIN_PASSWORD)<12: raise RuntimeError("Production requires strong initial credentials")
     if os.getenv("SEED_DEMO_DATA", "false").lower()=="true": raise RuntimeError("Demo seeding is forbidden in production")
 
-app = FastAPI(title="Internal Software Portal", docs_url=None, redoc_url=None)
+from contextlib import asynccontextmanager
+
+
+MCP_TOKEN = os.getenv("MCP_BEARER_TOKEN", "")
+MCP_SERVER = None
+MCP_APP = None
+if MCP_TOKEN:
+    from backend.mcp_server import create_server
+
+    MCP_SERVER = create_server(DB_PATH)
+    MCP_APP = MCP_SERVER.streamable_http_app()
+
+
+@asynccontextmanager
+async def app_lifespan(application):
+    if MCP_SERVER is not None:
+        async with MCP_SERVER.session_manager.run():
+            cleanup_expired_draft_media()
+            cleanup_product_screenshots()
+            yield
+    else:
+        cleanup_expired_draft_media()
+        cleanup_product_screenshots()
+        yield
+
+
+app = FastAPI(title="Internal Software Portal", docs_url=None, redoc_url=None, lifespan=app_lifespan)
+app.state.mcp_enabled = MCP_APP is not None
+
+if MCP_APP is None:
+    @app.api_route("/mcp", methods=["GET", "POST", "DELETE"])
+    @app.api_route("/mcp/{path:path}", methods=["GET", "POST", "DELETE"])
+    async def mcp_disabled(path: str = ""):
+        return JSONResponse({"detail": "MCP is disabled; configure MCP_BEARER_TOKEN"}, status_code=503)
+
+
+if MCP_APP is not None:
+    class MCPAuthMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                headers = dict(scope.get("headers", []))
+                supplied = headers.get(b"authorization", b"").decode("latin-1")
+                expected = "Bearer " + MCP_TOKEN
+                if not hmac.compare_digest(supplied, expected):
+                    response = JSONResponse({"detail": "Unauthorized"}, status_code=401)
+                    await response(scope, receive, send)
+                    return
+            await self.app(scope, receive, send)
+
+    MCP_APP.add_middleware(MCPAuthMiddleware)
+    app.mount("/mcp", MCP_APP, name="mcp")
 
 
 def db():
@@ -698,7 +751,8 @@ def cleanup_expired_draft_media():
     return len(objects)
 
 
-@app.on_event("startup")
+
+
 def cleanup_draft_media_on_startup():
     cleanup_expired_draft_media()
     cleanup_product_screenshots()
