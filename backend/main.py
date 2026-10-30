@@ -558,7 +558,7 @@ def save_product(data: ProductInput, request: Request):
                     raise HTTPException(400, "图片不属于该产品")
             elif not data.draft_token or not hmac.compare_digest(match.group(3), data.draft_token):
                 raise HTTPException(400, "草稿图片令牌无效")
-    values=(data.name,data.summary,data.description,data.category,"第三方" if data.kind in {"third","第三方"} else "自研",data.vendor,data.icon,int(data.published))
+    values=(data.name,data.summary,data.description,"","第三方" if data.kind in {"third","第三方"} else "自研",data.vendor,data.icon,int(data.published))
     with db() as c:
         existing = c.execute("SELECT id,icon_object_key,featured_slot FROM products WHERE id=?", (data.id,)).fetchone() if data.id else None
         if data.id and not existing:
@@ -583,7 +583,7 @@ def save_product(data: ProductInput, request: Request):
         if slot:
             c.execute("UPDATE products SET featured=0,featured_slot=0 WHERE featured_slot=? AND id!=?", (slot, data.id or 0))
         if data.id:
-            c.execute("UPDATE products SET name=?,summary=?,description=?,category=?,kind=?,vendor=?,icon=?,published=?,icon_object_key=?,icon_filename=?,featured=?,featured_slot=?,safety_notice=?,platform=?,form=?,categories=?,platforms=?,types=?,website_url=? WHERE id=?", (*values,icon_key,icon_file["filename"] if icon_file else "",int(bool(slot)),slot,data.safety_notice,data.platform,data.form,json.dumps(data.categories,ensure_ascii=False),json.dumps(data.platforms,ensure_ascii=False),json.dumps(data.types,ensure_ascii=False),data.website_url,data.id))
+            c.execute("UPDATE products SET name=?,summary=?,description=?,category=?,kind=?,vendor=?,icon=?,published=?,icon_object_key=?,icon_filename=?,featured=?,featured_slot=?,safety_notice=?,platform=?,form=?,categories='[]',platforms=?,types=?,website_url=? WHERE id=?", (*values,icon_key,icon_file["filename"] if icon_file else "",int(bool(slot)),slot,data.safety_notice,data.platform,data.form,json.dumps(data.platforms,ensure_ascii=False),json.dumps(data.types,ensure_ascii=False),data.website_url,data.id))
             pid=data.id
         else:
             pid=c.execute("INSERT INTO products(name,summary,description,category,kind,vendor,icon,published,icon_object_key,icon_filename,featured,featured_slot,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", (*values,icon_key,icon_file["filename"] if icon_file else "",int(bool(slot)),slot,now())).lastrowid
@@ -953,18 +953,7 @@ def handle_feedback(fid:int,request:Request,handled:bool=Form(True)):
 def delete_feedback(fid:int,request:Request): require_admin(request); write("DELETE FROM feedback WHERE id=?",(fid,)); return {"ok":True}
 
 
-@app.post("/api/admin/categories")
-def add_category(request:Request,name:str=Form(...)):
-    require_admin(request)
-    if len(name.strip())>80: raise HTTPException(400,"分类名称过长")
-    try: write("INSERT INTO categories(name) VALUES(?)",(name.strip(),))
-    except sqlite3.IntegrityError: raise HTTPException(409,"分类已存在")
-    return {"ok":True}
-
-
-@app.delete("/api/admin/categories/{name}")
-def del_category(name:str,request:Request): require_admin(request); write("DELETE FROM categories WHERE name=?",(name,)); return {"ok":True}
-
+@app.post("/api/admin/articles")
 
 @app.post("/api/admin/articles")
 def save_article(request:Request,title:str=Form(...),body:str=Form(...),category:str=Form(""),article_id:int=Form(0),published:bool=Form(False)):
