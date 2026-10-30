@@ -53,6 +53,27 @@ class PortalTests(unittest.TestCase):
         self.pid=created.json()["id"]
         self.client.cookies.clear()
 
+    def test_solution_status_transitions(self):
+        result = self.client.post('/api/solutions', data={'title': 'Status transition guide', 'body': 'Meaningful solution content'})
+        self.assertEqual(result.status_code, 200, result.text)
+        sid = result.json()['id']
+        endpoint = f'/api/admin/solutions/{sid}/status'
+        self.assertEqual(self.client.post(endpoint, data={'status': 'approved'}).status_code, 401)
+        headers = self.login()
+        self.assertEqual(self.client.post(endpoint, headers=headers, data={'status': 'invalid'}).status_code, 400)
+        self.assertEqual(self.client.post('/api/admin/solutions/999999/status', headers=headers, data={'status': 'approved'}).status_code, 404)
+        for status in ('approved', 'rejected', 'pending', 'approved'):
+            with self.subTest(status=status):
+                write('UPDATE solutions SET featured_slot=1,featured_at=? WHERE id=?', ('2026-01-01', sid))
+                response = self.client.post(endpoint, headers=headers, data={'status': status, 'reason': '审核备注'})
+                self.assertEqual(response.status_code, 200, response.text)
+                saved = row('SELECT status,reject_reason,featured_slot,featured_at FROM solutions WHERE id=?', (sid,))
+                self.assertEqual(saved['status'], status)
+                self.assertEqual(saved['reject_reason'], '审核备注')
+                self.assertEqual(saved['featured_slot'], 1 if status == 'approved' else 0)
+                self.assertEqual(saved['featured_at'], '2026-01-01' if status == 'approved' else None)
+                self.assertEqual(self.client.get(f'/api/solutions/{sid}').status_code, 200 if status == 'approved' else 404)
+
     def test_admin_edit_solution_preserves_status(self):
         result = self.client.post('/api/solutions', data={'title': 'Original solution', 'body': 'Original meaningful body'})
         sid = result.json()['id']

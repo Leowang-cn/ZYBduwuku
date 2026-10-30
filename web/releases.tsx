@@ -47,12 +47,12 @@ function VersionCard({release}: {release: Release}) {
   </Card>;
 }
 
-export function ReleaseDownloads({name, releases, isProduct = false, hasSubapps = false}: {name: string; releases: Release[]; isProduct?: boolean; hasSubapps?: boolean}) {
+export function ReleaseDownloads({name, releases, isProduct = false, hasSubapps = false, websiteUrl}: {name: string; releases: Release[]; isProduct?: boolean; hasSubapps?: boolean; websiteUrl?: string}) {
   const versions = groupVersions(releases);
-  if (isProduct && !versions.length && hasSubapps) return null;
+  if (isProduct && !versions.length && hasSubapps && !websiteUrl) return null;
   return <section className="release-section">
     <Title order={isProduct ? 2 : 3}>{isProduct ? '最新版本与下载' : name}</Title>
-    {!versions.length ? <Text size="sm" c="dimmed" mt="sm">暂无可下载版本。</Text> : <>
+    {!versions.length ? websiteUrl ? <Button mt="sm" component="a" href={websiteUrl} target="_blank" rel="noreferrer" leftSection={<IconArrowUpRight size={16}/>}>官网下载</Button> : <Text size="sm" c="dimmed" mt="sm">暂无可下载版本。</Text> : <>
       <Stack mt="sm" gap="xs"><VersionCard release={versions[0]}/></Stack>
       {versions.length > 1 && <details className="release-history"><summary>历史版本（{versions.length - 1}）</summary>
         <Stack mt="sm" gap="xs">{versions.slice(1).map(release => <VersionCard key={release.version} release={release}/>)}</Stack>

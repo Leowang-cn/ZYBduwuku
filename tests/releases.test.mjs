@@ -42,6 +42,19 @@ try {
     assert.equal(render(ReleaseDownloads, {name: 'minicale', releases: [], isProduct: true, hasSubapps: true}).includes('最新版本与下载'), false);
     assert.ok(render(ReleaseDownloads, {name: 'minicale PC端', releases}).includes('minicale PC端'));
   });
+  test('website-only products offer official download in a new tab', () => {
+    const props = {name: '官网软件', releases: [], isProduct: true, websiteUrl: 'https://example.com/official'};
+    for (const hasSubapps of [false, true]) {
+      const html = render(ReleaseDownloads, {...props, hasSubapps});
+      assert.ok(html.includes('官网下载'));
+      assert.ok(html.includes('href="https://example.com/official"'));
+      assert.ok(html.includes('target="_blank"') && html.includes('rel="noreferrer"'));
+      assert.ok(!html.includes('暂无可下载版本'));
+    }
+    assert.ok(render(ReleaseDownloads, {...props, websiteUrl: undefined}).includes('暂无可下载版本'));
+    const html = render(ReleaseDownloads, {...props, releases});
+    assert.ok(html.includes('/api/download/1') && !html.includes('官网下载'));
+  });
   test('explicit package metadata overrides legacy release metadata', () => {
     const [group] = groupVersions([{version: '1', platform: 'Windows', size: 'old', deliverables: [{platform: 'macOS', size: '', updated_at: '2026-01-02'}]}]);
     assert.equal(group.deliverables[0].platform, 'macOS');

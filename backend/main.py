@@ -371,9 +371,9 @@ def get_screenshot(sid: int):
 
 
 @app.get("/api/product-icons/{pid}")
-def get_product_icon(pid: int):
+def get_product_icon(pid: int, request: Request):
     product = row("SELECT icon_object_key,icon_filename,published FROM products WHERE id=?", (pid,))
-    if not product or not product["published"] or not product["icon_object_key"]:
+    if not product or (not product["published"] and not is_admin(request)) or not product["icon_object_key"]:
         raise HTTPException(404, "图片不存在")
     ext = Path(product["icon_filename"]).suffix.lower()
     content_type = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}.get(ext)
@@ -850,7 +850,8 @@ def solution_status(sid:int,request:Request,status:str=Form(...),reason:str=Form
     if status not in {"approved","rejected","pending"}: raise HTTPException(400,"无效状态")
     if not row("SELECT id FROM solutions WHERE id=?", (sid,)):
         raise HTTPException(404, "方案不存在")
-    c.execute("UPDATE solutions SET status=?,reject_reason=?,featured_slot=CASE WHEN ?='approved' THEN featured_slot ELSE 0 END,featured_at=CASE WHEN ?='approved' THEN featured_at ELSE NULL END WHERE id=?",(status,reason[:1000],status,status,sid)); return {"ok":True}
+    write("UPDATE solutions SET status=?,reject_reason=?,featured_slot=CASE WHEN ?='approved' THEN featured_slot ELSE 0 END,featured_at=CASE WHEN ?='approved' THEN featured_at ELSE NULL END WHERE id=?",(status,reason[:1000],status,status,sid))
+    return {"ok":True}
 
 
 @app.post("/api/admin/solutions/{sid}/featured")
