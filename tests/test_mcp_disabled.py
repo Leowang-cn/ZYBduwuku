@@ -10,8 +10,8 @@ import uvicorn
 import threading
 
 
-class McpDisabledTests(unittest.TestCase):
-    def test_mcp_is_disabled_without_token_but_site_still_responds(self):
+class McpNoAuthTests(unittest.TestCase):
+    def test_mcp_is_available_without_token_and_site_still_responds(self):
         temp = tempfile.TemporaryDirectory()
         database = Path(temp.name) / "app.sqlite"
         os.environ.update({"APP_ENV": "test", "SECRET_KEY": "test-secret", "DATABASE_URL": f"sqlite:///{database}"})
@@ -25,8 +25,9 @@ class McpDisabledTests(unittest.TestCase):
             while not server.started:
                 pass
             port = server.servers[0].sockets[0].getsockname()[1]
-            disabled = httpx.post(f"http://127.0.0.1:{port}/mcp", json={})
-            self.assertEqual(503, disabled.status_code)
+            response = httpx.get(f"http://127.0.0.1:{port}/mcp/")
+            self.assertNotEqual(503, response.status_code)
+            self.assertNotEqual(401, response.status_code)
             health = httpx.get(f"http://127.0.0.1:{port}/api/health")
             self.assertEqual(200, health.status_code)
         finally:

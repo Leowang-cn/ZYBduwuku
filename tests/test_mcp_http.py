@@ -32,7 +32,6 @@ class McpHttpIntegrationTests(unittest.TestCase):
             "APP_ENV": "test",
             "SECRET_KEY": "integration-test-secret",
             "DATABASE_URL": f"sqlite:///{self.database}",
-            "MCP_BEARER_TOKEN": "integration-test-token",
         })
         import importlib
         main = importlib.import_module("backend.main")
@@ -52,9 +51,9 @@ class McpHttpIntegrationTests(unittest.TestCase):
         for key in ("APP_ENV", "SECRET_KEY", "DATABASE_URL", "MCP_BEARER_TOKEN"):
             os.environ.pop(key, None)
 
-    def test_streamable_http_initialize_tools_and_auth(self):
+    def test_streamable_http_initialize_tools_and_query_without_auth(self):
         async def exercise():
-            async with httpx.AsyncClient(headers={"Authorization": "Bearer integration-test-token"}) as http:
+            async with httpx.AsyncClient() as http:
                 async with streamable_http_client(f"http://127.0.0.1:{self.port}/mcp/", http_client=http) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         initialized = await session.initialize()
@@ -63,9 +62,6 @@ class McpHttpIntegrationTests(unittest.TestCase):
                         self.assertEqual({"search_software", "get_software", "search_solutions", "get_solution"}, {t.name for t in tools.tools})
                         result = await session.call_tool("search_software", {"query": "Public"})
                         self.assertIn("Public", str(result.content))
-            self.assertEqual(401, (await httpx.AsyncClient().post(f"http://127.0.0.1:{self.port}/mcp/", json={})).status_code)
-            async with httpx.AsyncClient(headers={"Authorization": "Bearer wrong"}) as bad:
-                self.assertEqual(401, (await bad.post(f"http://127.0.0.1:{self.port}/mcp/", json={})).status_code)
         asyncio.run(exercise())
 
 
