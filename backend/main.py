@@ -139,9 +139,12 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS taxonomies(kind TEXT NOT NULL,name TEXT NOT NULL,PRIMARY KEY(kind,name))")
         # Legacy form taxonomy entries become the new multi-select tool types.
         c.execute("UPDATE taxonomies SET kind='type' WHERE kind='form'")
-        for table, column, definition in (("solutions", "featured_slot", "INTEGER NOT NULL DEFAULT 0"), ("products", "platform", "TEXT NOT NULL DEFAULT ''"), ("products", "form", "TEXT NOT NULL DEFAULT ''"), ("products", "icon_object_key", "TEXT NOT NULL DEFAULT ''"), ("products", "icon_filename", "TEXT NOT NULL DEFAULT ''"), ("products", "featured_slot", "INTEGER NOT NULL DEFAULT 0")):
+        for table, column, definition in (("solutions", "featured_slot", "INTEGER NOT NULL DEFAULT 0"), ("solutions", "featured_at", "TEXT"), ("solutions", "updated_at", "TEXT"), ("products", "platform", "TEXT NOT NULL DEFAULT ''"), ("products", "form", "TEXT NOT NULL DEFAULT ''"), ("products", "icon_object_key", "TEXT NOT NULL DEFAULT ''"), ("products", "icon_filename", "TEXT NOT NULL DEFAULT ''"), ("products", "featured_slot", "INTEGER NOT NULL DEFAULT 0")):
             if column not in {item["name"] for item in c.execute(f"PRAGMA table_info({table})")}:
                 c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        if not c.execute("SELECT 1 FROM settings WHERE key='solution_timestamps_migrated'").fetchone():
+            c.execute("UPDATE solutions SET updated_at=created_at WHERE updated_at IS NULL OR updated_at=''")
+            c.execute("INSERT INTO settings(key,value) VALUES('solution_timestamps_migrated','1')")
         # Convert legacy featured flags once, preserving the existing newest-first ordering.
         if not c.execute("SELECT 1 FROM settings WHERE key='featured_slots_migrated'").fetchone():
             for slot, item in enumerate(c.execute("SELECT id FROM products WHERE featured=1 ORDER BY id DESC LIMIT 3").fetchall(), 1):
@@ -326,7 +329,7 @@ def bootstrap():
     links_by_solution = {}
     for link in solution_links:
         links_by_solution.setdefault(link["solution_id"], []).append(link["name"])
-    solutions = rows("SELECT s.id,s.title,s.body,s.tags,s.category,s.product_id,s.author,s.created_at,s.featured_slot,p.name AS product_name,(SELECT count(*) FROM comments c WHERE c.solution_id=s.id AND c.status='approved') AS comments,(SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) AS likes FROM solutions s LEFT JOIN products p ON p.id=s.product_id WHERE s.status='approved' ORDER BY likes DESC,s.created_at DESC LIMIT 100")
+    solutions = rows("SELECT s.id,s.title,s.body,s.tags,s.category,s.product_id,s.author,s.created_at,s.updated_at,s.featured_slot,s.featured_at,p.name AS product_name,(SELECT count(*) FROM comments c WHERE c.solution_id=s.id AND c.status='approved') AS comments,(SELECT count(*) FROM solution_likes l WHERE l.solution_id=s.id) AS likes FROM solutions s LEFT JOIN products p ON p.id=s.product_id WHERE s.status='approved' ORDER BY CASE WHEN s.featured_slot>0 THEN 0 ELSE 1 END, s.featured_at DESC, COALESCE(s.updated_at,s.created_at) DESC, s.id DESC LIMIT 100")
     for solution in solutions:
         solution["tags"] = json.loads(solution["tags"])
         solution["likes"] = row("SELECT count(*) n FROM solution_likes WHERE solution_id=?", (solution["id"],))["n"]
@@ -818,7 +821,7 @@ def edit_solution(sid: int, request: Request, title: str = Form(...), body: str 
         for mid in set(re.findall(r'/api/solution-media/([1-9][0-9]*)', body)):
             if int(mid) not in image_ids and not c.execute("SELECT id FROM solution_media WHERE id=? AND solution_id=?", (int(mid), sid)).fetchone():
                 raise HTTPException(400, "图片不属于此方案")
-        c.execute("UPDATE solutions SET title=?,body=?,category=?,author=?,tags=?,product_id=? WHERE id=?", (title.strip(), body, category[:80], author.strip()[:60] or "匿名", json.dumps(normalized, ensure_ascii=False), ids[0] if ids else None, sid))
+        c.execute("UPDATE solutions SET title=?,body=?,category=?,author=?,tags=?,product_id=?,updated_at=? WHERE id=?", (title.strip(), body, category[:80], author.strip()[:60] or "匿名", json.dumps(normalized, ensure_ascii=False), ids[0] if ids else None, now(), sid))
         c.execute("DELETE FROM solution_products WHERE solution_id=?", (sid,))
         c.executemany("INSERT INTO solution_products(solution_id,product_id) VALUES(?,?)", [(sid, pid) for pid in ids])
         for mid in image_ids:
@@ -847,7 +850,7 @@ def solution_status(sid:int,request:Request,status:str=Form(...),reason:str=Form
     if status not in {"approved","rejected","pending"}: raise HTTPException(400,"无效状态")
     if not row("SELECT id FROM solutions WHERE id=?", (sid,)):
         raise HTTPException(404, "方案不存在")
-    write("UPDATE solutions SET status=?,reject_reason=?,featured_slot=CASE WHEN ?='approved' THEN featured_slot ELSE 0 END WHERE id=?",(status,reason[:1000],status,sid)); return {"ok":True}
+    c.execute("UPDATE solutions SET status=?,reject_reason=?,featured_slot=CASE WHEN ?='approved' THEN featured_slot ELSE 0 END,featured_at=CASE WHEN ?='approved' THEN featured_at ELSE NULL END WHERE id=?",(status,reason[:1000],status,status,sid)); return {"ok":True}
 
 
 @app.post("/api/admin/solutions/{sid}/featured")
@@ -859,8 +862,8 @@ def feature_solution(sid:int,request:Request,featured_slot:int=Form(...)):
         if not item: raise HTTPException(404,"方案不存在")
         if featured_slot and item["status"] != "approved": raise HTTPException(400,"仅已通过的方案可推荐")
         if featured_slot:
-            c.execute("UPDATE solutions SET featured_slot=0 WHERE featured_slot=?",(featured_slot,))
-        c.execute("UPDATE solutions SET featured_slot=? WHERE id=?",(featured_slot,sid))
+            c.execute("UPDATE solutions SET featured_slot=0,featured_at=NULL WHERE featured_slot=?",(featured_slot,))
+        c.execute("UPDATE solutions SET featured_slot=?,featured_at=? WHERE id=?",(featured_slot,now() if featured_slot else None,sid))
     return {"ok":True}
 
 
