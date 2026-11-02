@@ -13,13 +13,13 @@ class McpQueryTests(unittest.TestCase):
         self.db = Path(self.tmp.name) / "test.sqlite"
         conn = sqlite3.connect(self.db)
         conn.executescript("""
-            CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, summary TEXT, description TEXT, category TEXT, vendor TEXT, kind TEXT, published INTEGER, featured_slot INTEGER DEFAULT 0);
+            CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, summary TEXT, description TEXT, category TEXT, vendor TEXT, kind TEXT, published INTEGER, featured_slot INTEGER DEFAULT 0, website_url TEXT DEFAULT '');
             CREATE TABLE releases (id INTEGER PRIMARY KEY, product_id INTEGER, subapp_id INTEGER, version TEXT, notes TEXT, platform TEXT, size TEXT, created_at TEXT);
             CREATE TABLE subapps (id INTEGER PRIMARY KEY, product_id INTEGER, name TEXT);
             CREATE TABLE deliverables (id INTEGER PRIMARY KEY, release_id INTEGER, label TEXT, kind TEXT, url TEXT, object_key TEXT, filename TEXT, platform TEXT, size TEXT, updated_at TEXT);
             CREATE TABLE solutions (id INTEGER PRIMARY KEY, title TEXT, body TEXT, category TEXT, tags TEXT, author TEXT, status TEXT, created_at TEXT);
             CREATE TABLE solution_products (solution_id INTEGER, product_id INTEGER);
-            INSERT INTO products VALUES (1,'Public','summary','description','cat','vendor','self',1,0),(2,'Hidden','x','x','x','x','self',0,0);
+            INSERT INTO products VALUES (1,'Public','summary','description','cat','vendor','self',1,0,'https://vendor.example'),(2,'Hidden','x','x','x','x','self',0,0,'');
             INSERT INTO releases VALUES (1,1,NULL,'1.0','notes','','','2026-01-01');
             INSERT INTO deliverables VALUES (1,1,'site','url','https://example.test','','','','',''),(2,1,'installer','file','https://private-storage.test/signed?secret=x','cos/private-key','app.zip','','','');
             INSERT INTO solutions VALUES (1,'Approved','body','cat','["tag"]','author','approved','2026-01-01'),(2,'Pending','secret','cat','[]','author','pending','2026-01-02');
@@ -40,11 +40,32 @@ class McpQueryTests(unittest.TestCase):
         self.assertIsNone(get_solution(self.db, 2))
         result = get_software(self.db, 1)
         deliverables = result['releases'][0]['deliverables']
+        self.assertEqual('https://vendor.example', result['website_url'])
         self.assertEqual('https://example.test', deliverables[0]['url'])
+        self.assertEqual('https://example.test', deliverables[0]['download_url'])
         self.assertEqual('', deliverables[1]['url'])
-        self.assertEqual('/api/download/2', deliverables[1]['download_url'])
+        self.assertEqual('', result['detail_url'])
+        self.assertEqual('', deliverables[1]['download_url'])
+        self.assertEqual('file', deliverables[1]['download_type'])
         self.assertNotIn('private-storage.test', str(result))
         self.assertNotIn('cos/private-key', str(result))
+
+    def test_public_links_use_configured_base_url(self):
+        import os
+        previous = os.environ.get('DUWUKU_PUBLIC_BASE_URL')
+        os.environ['DUWUKU_PUBLIC_BASE_URL'] = 'https://portal.example/'
+        try:
+            software = search_software(self.db, 'Public')[0]
+            solution = search_solutions(self.db, 'Approved')[0]
+            result = get_software(self.db, 1)
+            self.assertEqual('https://portal.example/?software=1', software['detail_url'])
+            self.assertEqual('https://portal.example/?solution=1', solution['detail_url'])
+            self.assertEqual('https://portal.example/api/download/2', result['releases'][0]['deliverables'][1]['download_url'])
+        finally:
+            if previous is None:
+                os.environ.pop('DUWUKU_PUBLIC_BASE_URL', None)
+            else:
+                os.environ['DUWUKU_PUBLIC_BASE_URL'] = previous
 
     def test_queries_are_read_only(self):
         before = self.db.stat().st_size

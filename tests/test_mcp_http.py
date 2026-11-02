@@ -18,13 +18,13 @@ class McpHttpIntegrationTests(unittest.TestCase):
         self.database = Path(self.temp.name) / "app.sqlite"
         conn = sqlite3.connect(self.database)
         conn.executescript("""
-            CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, summary TEXT, description TEXT, category TEXT, vendor TEXT, kind TEXT, published INTEGER, featured INTEGER DEFAULT 0, featured_slot INTEGER DEFAULT 0);
+            CREATE TABLE products (id INTEGER PRIMARY KEY, name TEXT, summary TEXT, description TEXT, category TEXT, vendor TEXT, kind TEXT, published INTEGER, featured INTEGER DEFAULT 0, featured_slot INTEGER DEFAULT 0, website_url TEXT DEFAULT '');
             CREATE TABLE releases (id INTEGER PRIMARY KEY, product_id INTEGER, subapp_id INTEGER, version TEXT, notes TEXT, platform TEXT, size TEXT, created_at TEXT);
             CREATE TABLE subapps (id INTEGER PRIMARY KEY, product_id INTEGER, name TEXT);
             CREATE TABLE deliverables (id INTEGER PRIMARY KEY, release_id INTEGER, label TEXT, kind TEXT, url TEXT, object_key TEXT, filename TEXT, platform TEXT, size TEXT, updated_at TEXT);
             CREATE TABLE solutions (id INTEGER PRIMARY KEY, title TEXT, body TEXT, category TEXT, product_id INTEGER, tags TEXT, author TEXT, status TEXT, created_at TEXT);
             CREATE TABLE solution_products (solution_id INTEGER, product_id INTEGER);
-            INSERT INTO products VALUES (1, 'Public', 'Summary', 'Description', 'Category', 'Vendor', 'self', 1, 0, 0);
+            INSERT INTO products VALUES (1, 'Public', 'Summary', 'Description', 'Category', 'Vendor', 'self', 1, 0, 0, '');
         """)
         conn.commit()
         conn.close()

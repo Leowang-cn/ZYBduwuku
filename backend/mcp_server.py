@@ -19,6 +19,19 @@ MAX_LIMIT = 50
 DEFAULT_LIMIT = 10
 
 
+def _public_url(path: str) -> str:
+    base_url = os.getenv("DUWUKU_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    return f"{base_url}{path}" if base_url else ""
+
+
+def _software_url(software_id: int) -> str:
+    return _public_url(f"/?software={software_id}")
+
+
+def _solution_url(solution_id: int) -> str:
+    return _public_url(f"/?solution={solution_id}")
+
+
 def _bounded_text(value: Any, limit: int = MAX_TEXT_LENGTH) -> str:
     return str(value or "")[:limit]
 
@@ -47,7 +60,7 @@ def _product_summary(row: sqlite3.Row) -> dict[str, Any]:
         "summary": _bounded_text(row["summary"], 1000),
         "category": _bounded_text(row["category"], 200),
         "vendor": _bounded_text(row["vendor"], 200),
-        "url": f"/api/products/{row['id']}",
+        "detail_url": _software_url(row["id"]),
     }
 
 
@@ -70,7 +83,7 @@ def get_software(database: str | Path, software_id: int) -> Optional[dict[str, A
         raise ValueError("software_id must be a positive integer")
     with connect_readonly(database) as conn:
         product = conn.execute(
-            "SELECT id,name,summary,description,category,vendor,kind FROM products WHERE id=? AND published=1",
+            "SELECT id,name,summary,description,category,vendor,kind,website_url FROM products WHERE id=? AND published=1",
             (software_id,),
         ).fetchone()
         if not product:
@@ -99,14 +112,17 @@ def get_software(database: str | Path, software_id: int) -> Optional[dict[str, A
                     "filename": _bounded_text(d["filename"], 255),
                     "platform": _bounded_text(d["platform"], 80), "size": _bounded_text(d["size"], 80),
                     "updated_at": d["updated_at"],
-                    "download_url": f"/api/download/{d['id']}" if d["kind"] == "file" and d["object_key"] else "",
+                    "download_url": _public_url(f"/api/download/{d['id']}") if d["kind"] == "file" and d["object_key"] else _bounded_text(d["url"], 1000) if d["kind"] == "url" else "",
+                    "download_type": "file" if d["kind"] == "file" and d["object_key"] else "website" if d["kind"] == "url" and d["url"] else "",
                 } for d in deliverables],
             })
     return {
         "id": product["id"], "name": _bounded_text(product["name"], 200),
         "summary": _bounded_text(product["summary"], 1000), "description": _bounded_text(product["description"]),
         "category": _bounded_text(product["category"], 200), "vendor": _bounded_text(product["vendor"], 200),
-        "kind": product["kind"], "url": f"/api/products/{product['id']}", "releases": release_data,
+        "kind": product["kind"], "website_url": _bounded_text(product["website_url"], 1000),
+        "website_url_type": "website" if product["website_url"] else "",
+        "detail_url": _software_url(product["id"]), "releases": release_data,
     }
 
 
@@ -118,7 +134,7 @@ def _solution_summary(row: sqlite3.Row) -> dict[str, Any]:
     return {"id": row["id"], "title": _bounded_text(row["title"], 300),
             "summary": _bounded_text(row["body"], 1000), "category": _bounded_text(row["category"], 200),
             "tags": tags[:20] if isinstance(tags, list) else [], "author": _bounded_text(row["author"], 100),
-            "created_at": row["created_at"], "url": f"/api/solutions/{row['id']}"}
+            "created_at": row["created_at"], "detail_url": _solution_url(row["id"])}
 
 
 def search_solutions(database: str | Path, query: str = "", limit: int = DEFAULT_LIMIT) -> list[dict[str, Any]]:
