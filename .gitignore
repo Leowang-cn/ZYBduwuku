@@ -13,3 +13,6 @@ node_modules/
 .upload-staging/
 
 test_password
+
+# Frontend build output; generated on the server by npm run build
+dist/

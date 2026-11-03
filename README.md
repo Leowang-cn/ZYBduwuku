@@ -46,7 +46,7 @@ npm run build
 .venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8950
 ```
 
-打开 `http://127.0.0.1:8950`。FastAPI 会直接托管 `dist/` 中的 React 页面；开发时也可使用 VS Code 任务启动同一后端。部署前必须设置 `ADMIN_PASSWORD` 与 `SECRET_KEY`。
+打开 `http://127.0.0.1:8950`。FastAPI 会直接托管 `dist/` 中的 React 页面；`dist/` 是构建产物，不提交到 Git，部署时须在拉取代码后重新执行 `npm run build`；开发时也可使用 VS Code 任务启动同一后端。部署前必须设置 `ADMIN_PASSWORD` 与 `SECRET_KEY`。
 
 运行测试：
 
