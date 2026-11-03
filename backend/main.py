@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import logging
 import ipaddress
@@ -18,7 +19,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from backend import storage
@@ -1216,9 +1217,48 @@ def feedback_comment_status(cid:int,request:Request,status:str=Form(...)):
 
 if (ROOT/"dist").is_dir(): app.mount("/assets",StaticFiles(directory=ROOT/"dist"/"assets"),name="assets")
 
+def _plain_text(value: str) -> str:
+    text = re.sub(r"<(script|style)\b[\s\S]*?</\1>|<!--[\s\S]*?-->", " ", value or "", flags=re.I)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", text))
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def share_meta(params) -> Optional[dict]:
+    """Preview metadata for a shared detail link; only published software and approved solutions."""
+    base = os.getenv("DUWUKU_PUBLIC_BASE_URL", "").strip().rstrip("/")
+    pid, sid = params.get("software", ""), params.get("solution", "")
+    if re.fullmatch(r"[1-9][0-9]{0,9}", pid):
+        item = row("SELECT id,name,summary,icon_object_key FROM products WHERE id=? AND published=1", (int(pid),))
+        if not item: return None
+        title, description, path = item["name"], item["summary"], f"/?software={item['id']}"
+        image = f"/api/product-icons/{item['id']}" if item["icon_object_key"] else ""
+    elif re.fullmatch(r"[1-9][0-9]{0,9}", sid):
+        item = row("SELECT id,title,body FROM solutions WHERE id=? AND status='approved'", (int(sid),))
+        if not item: return None
+        title, description, path, image = item["title"], _plain_text(item["body"]), f"/?solution={item['id']}", ""
+    else:
+        return None
+    description = description if len(description) <= 120 else description[:119] + "…"
+    return {"title": title, "description": description, "url": f"{base}{path}" if base else "", "image": f"{base}{image}" if base and image else ""}
+
+
+def render_index(index: Path, params) -> HTMLResponse:
+    page = index.read_text(encoding="utf-8")
+    meta = share_meta(params)
+    if meta:
+        esc = lambda value: html.escape(value, quote=True)
+        tags = [f'<meta property="og:type" content="article"/>', f'<meta property="og:site_name" content="杜武库"/>',
+                f'<meta property="og:title" content="{esc(meta["title"])}"/>', f'<meta name="description" content="{esc(meta["description"])}"/>',
+                f'<meta property="og:description" content="{esc(meta["description"])}"/>']
+        if meta["url"]: tags.append(f'<meta property="og:url" content="{esc(meta["url"])}"/>')
+        if meta["image"]: tags.append(f'<meta property="og:image" content="{esc(meta["image"])}"/>')
+        page = re.sub(r"<title>[\s\S]*?</title>", lambda _: f"<title>{esc(meta['title'])}｜杜武库</title>" + "".join(tags), page, count=1)
+    return HTMLResponse(page, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/{path:path}")
-def frontend(path:str):
+def frontend(path:str, request: Request):
     target=ROOT/"dist"/path
     if target.is_file() and ROOT/"dist" in target.resolve().parents: return FileResponse(target)
-    if (ROOT/"dist"/"index.html").is_file(): return FileResponse(ROOT/"dist"/"index.html")
+    if (ROOT/"dist"/"index.html").is_file(): return render_index(ROOT/"dist"/"index.html", request.query_params)
     return JSONResponse({"message":"前端尚未构建，请执行 npm run build"},status_code=503)
