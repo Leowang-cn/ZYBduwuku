@@ -55,7 +55,7 @@ if os.getenv("APP_ENV", "development") == "production":
 from contextlib import asynccontextmanager
 
 
-from backend.mcp_server import create_server
+from backend.mcp_server import CITATION_SCHEMA as MCP_CITATION_SCHEMA, create_server
 
 MCP_SERVER = create_server(DB_PATH)
 MCP_APP = MCP_SERVER.streamable_http_app()
@@ -113,6 +113,8 @@ def init_db():
             if field not in deliverable_columns:
                 c.execute(f"ALTER TABLE deliverables ADD COLUMN {field} TEXT NOT NULL DEFAULT ''")
                 c.execute(f"UPDATE deliverables SET {field}=COALESCE((SELECT {source} FROM releases WHERE releases.id=deliverables.release_id),'')")
+        if "source" not in {item["name"] for item in c.execute("PRAGMA table_info(events)")}: c.execute("ALTER TABLE events ADD COLUMN source TEXT NOT NULL DEFAULT 'web'")
+        c.executescript(MCP_CITATION_SCHEMA)
         comment_columns = {item["name"] for item in c.execute("PRAGMA table_info(comments)")}
         if "ip" not in comment_columns:
             c.execute("ALTER TABLE comments ADD COLUMN ip TEXT NOT NULL DEFAULT ''")
@@ -131,6 +133,7 @@ def init_db():
         c.execute("CREATE TABLE IF NOT EXISTS feedback_comment_files(id INTEGER PRIMARY KEY AUTOINCREMENT,comment_id INTEGER NOT NULL REFERENCES feedback_comments(id) ON DELETE CASCADE,object_key TEXT NOT NULL,filename TEXT NOT NULL,content_type TEXT NOT NULL)")
         if "safety_notice" not in {item["name"] for item in c.execute("PRAGMA table_info(products)")}: c.execute("ALTER TABLE products ADD COLUMN safety_notice TEXT NOT NULL DEFAULT ''")
         if "views" not in {item["name"] for item in c.execute("PRAGMA table_info(products)")}: c.execute("ALTER TABLE products ADD COLUMN views INTEGER NOT NULL DEFAULT 0")
+        if "views" not in {item["name"] for item in c.execute("PRAGMA table_info(solutions)")}: c.execute("ALTER TABLE solutions ADD COLUMN views INTEGER NOT NULL DEFAULT 0")
         if "platforms" not in {item["name"] for item in c.execute("PRAGMA table_info(products)")}: c.execute("ALTER TABLE products ADD COLUMN platforms TEXT NOT NULL DEFAULT ''")
         if "categories" not in {item["name"] for item in c.execute("PRAGMA table_info(products)")}: c.execute("ALTER TABLE products ADD COLUMN categories TEXT NOT NULL DEFAULT ''")
         if "parent_id" not in {item["name"] for item in c.execute("PRAGMA table_info(feedback)")}: c.execute("ALTER TABLE feedback ADD COLUMN parent_id INTEGER REFERENCES feedback(id) ON DELETE CASCADE")
@@ -281,6 +284,10 @@ def rate(request: Request, name: str, limit: int = 12, period: int = 60):
         c.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (key, f"{start}:{count+1}"))
 
 
+def ai_citations(kind: str, target_id: int) -> int:
+    return row("SELECT count(*) n FROM mcp_citations WHERE kind=? AND target_id=?", (kind, target_id))["n"]
+
+
 def public_product(p, admin=False):
     p["safety_notice"] = p.get("safety_notice", "")
     p["categories"] = json.loads(p.get("categories") or "[]")
@@ -293,6 +300,9 @@ def public_product(p, admin=False):
     p["votes"] = {"up": row("SELECT count(*) n FROM product_votes WHERE product_id=? AND value=1", (p["id"],))["n"], "down": row("SELECT count(*) n FROM product_votes WHERE product_id=? AND value=-1", (p["id"],))["n"]}
     p["clicks"] = {"download":row("SELECT count(*) n FROM events WHERE product_id=? AND kind='download'",(p["id"],))["n"],"external":row("SELECT count(*) n FROM events WHERE product_id=? AND kind='external'",(p["id"],))["n"]}
     p["click_count"] = p["clicks"]["download"] + p["clicks"]["external"]
+    p["ai_citations"] = ai_citations("software", p["id"])
+    if admin:
+        p["mcp"] = {"citations":p["ai_citations"],"downloads":row("SELECT count(*) n FROM events WHERE product_id=? AND source='mcp'",(p["id"],))["n"]}
     releases = rows("SELECT id,version,notes,created_at,platform,size FROM releases WHERE product_id=? AND subapp_id IS NULL ORDER BY created_at DESC,id DESC", (p["id"],))
     for release in releases:
         release["deliverables"] = rows("SELECT id,label,kind,url,filename,platform,size,updated_at" + (",object_key" if admin else "") + " FROM deliverables WHERE release_id=?", (release["id"],))
@@ -340,8 +350,11 @@ def bootstrap():
 
 @app.get("/api/solutions/{sid}")
 def solution_detail(sid: int):
-    item = row("SELECT s.id,s.title,s.body,s.tags,s.category,s.author,s.created_at FROM solutions s WHERE s.id=? AND s.status='approved'", (sid,))
+    if not row("SELECT id FROM solutions WHERE id=? AND status='approved'", (sid,)): raise HTTPException(404, "内容不存在")
+    write("UPDATE solutions SET views=views+1 WHERE id=?", (sid,))
+    item = row("SELECT s.id,s.title,s.body,s.tags,s.category,s.author,s.created_at,s.views FROM solutions s WHERE s.id=? AND s.status='approved'", (sid,))
     if not item: raise HTTPException(404, "内容不存在")
+    item["ai_citations"] = ai_citations("solution", sid)
     item["tags"] = json.loads(item["tags"])
     item["products"] = rows("SELECT p.id,p.name,p.summary,p.category,p.icon,p.icon_object_key,p.icon_filename FROM products p JOIN solution_products sp ON sp.product_id=p.id WHERE sp.solution_id=? AND p.published=1 ORDER BY p.name", (sid,))
     for product in item["products"]:
@@ -450,7 +463,7 @@ def admin_data(request: Request):
     require_admin(request)
     products = [public_product(p, admin=True) for p in rows("SELECT * FROM products ORDER BY id DESC")]
     feedback_items = [{**f,"files":rows("SELECT id,filename FROM feedback_files WHERE feedback_id=?",(f["id"],)),"comments":[{**comment,"files":rows("SELECT id,filename FROM feedback_comment_files WHERE comment_id=?",(comment["id"],))} for comment in rows("SELECT id,parent_id,body,nickname,status,created_at,ip FROM feedback_comments WHERE feedback_id=? ORDER BY id",(f["id"],))]} for f in rows("SELECT f.*,p.name product_name FROM feedback f JOIN products p ON p.id=f.product_id ORDER BY f.id DESC")]
-    return {"products": products, "solutions": [{**s, "files": rows("SELECT id,filename,content_type FROM solution_files WHERE solution_id=?", (s["id"],)), "tags": json.loads(s["tags"]), "product_ids": [link["product_id"] for link in rows("SELECT product_id FROM solution_products WHERE solution_id=? ORDER BY product_id", (s["id"],))]} for s in rows("SELECT s.*,p.name product_name FROM solutions s LEFT JOIN products p ON p.id=s.product_id ORDER BY s.id DESC")], "feedback": feedback_items, "comments": rows("SELECT c.*,s.title solution_title FROM comments c JOIN solutions s ON s.id=c.solution_id ORDER BY c.id DESC"), "articles": rows("SELECT * FROM articles ORDER BY id DESC"), "categories": [x["name"] for x in rows("SELECT name FROM categories ORDER BY name")], "taxonomies": rows("SELECT kind,name FROM taxonomies WHERE kind IN ('platform','type') ORDER BY kind,name"), "stats": {"products": row("SELECT count(*) n FROM products")["n"], "published": row("SELECT count(*) n FROM products WHERE published=1")["n"], "pending": row("SELECT count(*) n FROM solutions WHERE status='pending'")["n"], "feedback": row("SELECT count(*) n FROM feedback")["n"], "downloads": row("SELECT count(*) n FROM events WHERE kind='download'")["n"], "external_clicks": row("SELECT count(*) n FROM events WHERE kind='external'")["n"], "trend": rows("SELECT substr(created_at,1,10) day,kind,count(*) count FROM events WHERE created_at>=date('now','-13 days') GROUP BY day,kind ORDER BY day")}}
+    return {"products": products, "solutions": [{**s, "files": rows("SELECT id,filename,content_type FROM solution_files WHERE solution_id=?", (s["id"],)), "tags": json.loads(s["tags"]), "mcp_citations": ai_citations("solution", s["id"]), "product_ids": [link["product_id"] for link in rows("SELECT product_id FROM solution_products WHERE solution_id=? ORDER BY product_id", (s["id"],))]} for s in rows("SELECT s.*,p.name product_name FROM solutions s LEFT JOIN products p ON p.id=s.product_id ORDER BY s.id DESC")], "feedback": feedback_items, "comments": rows("SELECT c.*,s.title solution_title FROM comments c JOIN solutions s ON s.id=c.solution_id ORDER BY c.id DESC"), "articles": rows("SELECT * FROM articles ORDER BY id DESC"), "categories": [x["name"] for x in rows("SELECT name FROM categories ORDER BY name")], "taxonomies": rows("SELECT kind,name FROM taxonomies WHERE kind IN ('platform','type') ORDER BY kind,name"), "stats": {"products": row("SELECT count(*) n FROM products")["n"], "published": row("SELECT count(*) n FROM products WHERE published=1")["n"], "pending": row("SELECT count(*) n FROM solutions WHERE status='pending'")["n"], "feedback": row("SELECT count(*) n FROM feedback")["n"], "downloads": row("SELECT count(*) n FROM events WHERE kind='download'")["n"], "external_clicks": row("SELECT count(*) n FROM events WHERE kind='external'")["n"], "mcp_software_citations": row("SELECT count(*) n FROM mcp_citations WHERE kind='software'")["n"], "mcp_solution_citations": row("SELECT count(*) n FROM mcp_citations WHERE kind='solution'")["n"], "mcp_downloads": row("SELECT count(*) n FROM events WHERE source='mcp'")["n"], "mcp_top": rows("SELECT c.kind,c.target_id,count(*) count,COALESCE(p.name,s.title,'(已删除)') title FROM mcp_citations c LEFT JOIN products p ON c.kind='software' AND p.id=c.target_id LEFT JOIN solutions s ON c.kind='solution' AND s.id=c.target_id GROUP BY c.kind,c.target_id ORDER BY count DESC LIMIT 10"), "trend": rows("SELECT substr(created_at,1,10) day,kind,count(*) count FROM events WHERE created_at>=date('now','-13 days') GROUP BY day,kind ORDER BY day")}}
 
 
 class ProductInput(BaseModel):
@@ -985,16 +998,21 @@ def change_password(data:PasswordInput,request:Request):
     return {"ok":True}
 
 
-def event(kind: str, pid: int):
-    write("INSERT INTO events(kind,product_id,created_at) VALUES(?,?,?)",(kind,pid,now()))
+def event(kind: str, pid: int, source: str = "web"):
+    write("INSERT INTO events(kind,product_id,created_at,source) VALUES(?,?,?,?)",(kind,pid,now(),source))
 
 
 @app.get("/api/download/{did}")
-def download(did:int):
-    d=row("SELECT d.*,p.id pid,p.published FROM deliverables d JOIN releases r ON r.id=d.release_id JOIN products p ON p.id=r.product_id WHERE d.id=? AND d.kind='file' AND d.object_key!=''",(did,))
+def download(did:int, src:str=""):
+    d=row("SELECT d.*,p.id pid,p.published FROM deliverables d JOIN releases r ON r.id=d.release_id JOIN products p ON p.id=r.product_id WHERE d.id=? AND ((d.kind='file' AND d.object_key!='') OR (d.kind='url' AND d.url!=''))",(did,))
     if not d or not d["published"]: raise HTTPException(404,"文件资源不可用")
+    source="mcp" if src=="mcp" else "web"
+    if d["kind"]=="url":
+        if urlparse(d["url"]).scheme not in ("http","https"): raise HTTPException(404,"文件资源不可用")
+        event("external",d["pid"],source)
+        return RedirectResponse(d["url"],status_code=302)
     response=storage.serve(d["object_key"],d["filename"],"application/octet-stream")
-    event("download",d["pid"])
+    event("download",d["pid"],source)
     return response
 
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from backend.mcp_server import get_solution, get_software, search_software, search_solutions
+from backend.mcp_server import get_solution, get_software, record_citations, search_software, search_solutions
 
 
 class McpQueryTests(unittest.TestCase):
@@ -60,7 +60,8 @@ class McpQueryTests(unittest.TestCase):
             result = get_software(self.db, 1)
             self.assertEqual('https://portal.example/?software=1', software['detail_url'])
             self.assertEqual('https://portal.example/?solution=1', solution['detail_url'])
-            self.assertEqual('https://portal.example/api/download/2', result['releases'][0]['deliverables'][1]['download_url'])
+            self.assertEqual('https://portal.example/api/download/1?src=mcp', result['releases'][0]['deliverables'][0]['download_url'])
+            self.assertEqual('https://portal.example/api/download/2?src=mcp', result['releases'][0]['deliverables'][1]['download_url'])
         finally:
             if previous is None:
                 os.environ.pop('DUWUKU_PUBLIC_BASE_URL', None)
@@ -71,6 +72,15 @@ class McpQueryTests(unittest.TestCase):
         before = self.db.stat().st_size
         get_software(self.db, 1); search_solutions(self.db)
         self.assertEqual(before, self.db.stat().st_size)
+
+    def test_record_citations_creates_table_and_counts(self):
+        record_citations(self.db, 'software', [1, 1], 'get_software')
+        record_citations(self.db, 'solution', [1], 'get_solution')
+        record_citations(self.db, 'solution', [], 'get_solution')
+        conn = sqlite3.connect(self.db)
+        counts = dict(conn.execute("SELECT kind,count(*) FROM mcp_citations GROUP BY kind").fetchall())
+        conn.close()
+        self.assertEqual({'software': 2, 'solution': 1}, counts)
 
 
 if __name__ == '__main__':

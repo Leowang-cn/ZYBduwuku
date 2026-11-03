@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sqlite3
+from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -17,6 +20,17 @@ MAX_QUERY_LENGTH = 200
 MAX_TEXT_LENGTH = 4000
 MAX_LIMIT = 50
 DEFAULT_LIMIT = 10
+CITATION_SCHEMA = """CREATE TABLE IF NOT EXISTS mcp_citations(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK(kind IN ('software','solution')),
+    target_id INTEGER NOT NULL,
+    tool TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_citations_target ON mcp_citations(kind,target_id);
+CREATE INDEX IF NOT EXISTS idx_mcp_citations_date ON mcp_citations(created_at);"""
+
+logger = logging.getLogger(__name__)
 
 
 def _public_url(path: str) -> str:
@@ -30,6 +44,10 @@ def _software_url(software_id: int) -> str:
 
 def _solution_url(solution_id: int) -> str:
     return _public_url(f"/?solution={solution_id}")
+
+
+def _download_url(deliverable_id: int) -> str:
+    return _public_url(f"/api/download/{deliverable_id}?src=mcp")
 
 
 def _bounded_text(value: Any, limit: int = MAX_TEXT_LENGTH) -> str:
@@ -112,7 +130,7 @@ def get_software(database: str | Path, software_id: int) -> Optional[dict[str, A
                     "filename": _bounded_text(d["filename"], 255),
                     "platform": _bounded_text(d["platform"], 80), "size": _bounded_text(d["size"], 80),
                     "updated_at": d["updated_at"],
-                    "download_url": _public_url(f"/api/download/{d['id']}") if d["kind"] == "file" and d["object_key"] else _bounded_text(d["url"], 1000) if d["kind"] == "url" else "",
+                    "download_url": _download_url(d["id"]) if d["kind"] == "file" and d["object_key"] else (_download_url(d["id"]) or _bounded_text(d["url"], 1000)) if d["kind"] == "url" and d["url"] else "",
                     "download_type": "file" if d["kind"] == "file" and d["object_key"] else "website" if d["kind"] == "url" and d["url"] else "",
                 } for d in deliverables],
             })
@@ -172,6 +190,22 @@ def get_solution(database: str | Path, solution_id: int) -> dict[str, Any] | Non
     return result
 
 
+def record_citations(database: str | Path, kind: str, target_ids: list[int], tool: str) -> None:
+    """Record that MCP returned these items; failures never break the query."""
+    if not target_ids:
+        return
+    created_at = datetime.now(timezone.utc).isoformat()
+    try:
+        with closing(sqlite3.connect(Path(database).expanduser().resolve(), timeout=5)) as conn, conn:
+            conn.executescript(CITATION_SCHEMA)
+            conn.executemany(
+                "INSERT INTO mcp_citations(kind,target_id,tool,created_at) VALUES(?,?,?,?)",
+                [(kind, target_id, tool, created_at) for target_id in target_ids],
+            )
+    except sqlite3.Error:
+        logger.exception("Failed to record MCP citations")
+
+
 def create_server(database: str | Path):
     """Create the optional FastMCP server, if the SDK is installed."""
     try:
@@ -192,7 +226,10 @@ def create_server(database: str | Path):
 
     @server.tool()
     def get_software(software_id: int) -> Optional[dict[str, Any]]:
-        return globals()["get_software"](database, software_id)
+        result = globals()["get_software"](database, software_id)
+        if result:
+            record_citations(database, "software", [result["id"]], "get_software")
+        return result
 
     @server.tool()
     def search_solutions(query: str = "", limit: int = DEFAULT_LIMIT) -> list[dict[str, Any]]:
@@ -200,7 +237,10 @@ def create_server(database: str | Path):
 
     @server.tool()
     def get_solution(solution_id: int) -> dict[str, Any] | None:
-        return globals()["get_solution"](database, solution_id)
+        result = globals()["get_solution"](database, solution_id)
+        if result:
+            record_citations(database, "solution", [result["id"]], "get_solution")
+        return result
 
     return server
 

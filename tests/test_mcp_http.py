@@ -62,7 +62,54 @@ class McpHttpIntegrationTests(unittest.TestCase):
                         self.assertEqual({"search_software", "get_software", "search_solutions", "get_solution"}, {t.name for t in tools.tools})
                         result = await session.call_tool("search_software", {"query": "Public"})
                         self.assertIn("Public", str(result.content))
+                        await session.call_tool("get_software", {"software_id": 1})
+                        await session.call_tool("get_software", {"software_id": 99})
         asyncio.run(exercise())
+        conn = sqlite3.connect(self.database)
+        self.assertEqual([("software", 1, "get_software")], conn.execute("SELECT kind,target_id,tool FROM mcp_citations").fetchall())
+        conn.close()
+
+    def test_mcp_download_link_redirects_and_records_source(self):
+        conn = sqlite3.connect(self.database)
+        conn.execute("INSERT INTO releases(id,product_id,version,created_at) VALUES(1,1,'1.0','2026-01-01')")
+        conn.execute("INSERT INTO deliverables(id,release_id,label,kind,url,object_key,filename) VALUES(1,1,'site','url','https://vendor.example/app','','')")
+        conn.commit(); conn.close()
+        response = httpx.get(f"http://127.0.0.1:{self.port}/api/download/1?src=mcp")
+        self.assertEqual(302, response.status_code)
+        self.assertEqual("https://vendor.example/app", response.headers["location"])
+        httpx.get(f"http://127.0.0.1:{self.port}/api/download/1")
+        conn = sqlite3.connect(self.database)
+        self.assertEqual([("external", "mcp"), ("external", "web")], conn.execute("SELECT kind,source FROM events ORDER BY id").fetchall())
+        conn.close()
+
+
+
+class DetailStatsTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        os.environ.update({"APP_ENV": "test", "SECRET_KEY": "integration-test-secret", "DATABASE_URL": f"sqlite:///{Path(self.temp.name) / 'full.sqlite'}"})
+        import importlib
+        from fastapi.testclient import TestClient
+        self.main = importlib.reload(importlib.import_module("backend.main"))
+        self.client = TestClient(self.main.app)
+
+    def tearDown(self):
+        self.temp.cleanup()
+        for key in ("APP_ENV", "SECRET_KEY", "DATABASE_URL"):
+            os.environ.pop(key, None)
+
+    def test_solution_and_product_details_include_views_and_ai_citations(self):
+        from backend.mcp_server import record_citations
+        main = self.main
+        product_id = main.write("INSERT INTO products(name,published,created_at) VALUES('Full',1,'2026-01-01')")
+        solution_id = main.write("INSERT INTO solutions(title,body,category,tags,author,status,created_at) VALUES('Guide','body','','[]','a','approved','2026-01-01')")
+        record_citations(main.DB_PATH, "solution", [solution_id], "get_solution")
+        record_citations(main.DB_PATH, "software", [product_id], "get_software")
+        self.client.get(f"/api/solutions/{solution_id}")
+        solution = self.client.get(f"/api/solutions/{solution_id}").json()
+        self.assertEqual((2, 1), (solution["views"], solution["ai_citations"]))
+        product = self.client.get(f"/api/products/{product_id}").json()
+        self.assertEqual((1, 1), (product["views"], product["ai_citations"]))
 
 
 if __name__ == "__main__":
