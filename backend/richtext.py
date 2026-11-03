@@ -5,8 +5,8 @@ from urllib.parse import urlsplit
 import nh3
 
 RICH_PREFIX = '<!--portal-rich-->'
-TAGS = {'p', 'br', 'strong', 'em', 's', 'u', 'code', 'pre', 'blockquote', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'hr', 'a', 'img', 'video', 'audio', 'figure', 'figcaption', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td'}
-ATTRS = {'a': {'href', 'title'}, 'p': {'style'}, 'h1': {'style'}, 'h2': {'style'}, 'h3': {'style'}, 'figure': {'style'}, 'img': {'src', 'alt', 'title', 'width', 'style'}, 'video': {'src', 'controls', 'preload', 'width', 'style'}, 'audio': {'src', 'controls', 'preload'}, 'td': {'colspan', 'rowspan', 'colwidth'}, 'th': {'colspan', 'rowspan', 'colwidth'}}
+TAGS = {'p', 'br', 'strong', 'em', 's', 'u', 'code', 'pre', 'blockquote', 'h1', 'h2', 'h3', 'ul', 'ol', 'li', 'hr', 'a', 'img', 'video', 'audio', 'figure', 'figcaption', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'mark', 'span', 'aside'}
+ATTRS = {'a': {'href', 'title'}, 'span': {'style'}, 'mark': {'style', 'data-highlight'}, 'p': {'style'}, 'h1': {'style'}, 'h2': {'style'}, 'h3': {'style'}, 'figure': {'style'}, 'img': {'src', 'alt', 'title', 'width', 'style'}, 'video': {'src', 'controls', 'preload', 'width', 'style'}, 'audio': {'src', 'controls', 'preload'}, 'td': {'colspan', 'rowspan', 'colwidth'}, 'th': {'colspan', 'rowspan', 'colwidth'}}
 
 def safe_url(value):
     if re.fullmatch(r'/api/(?:product-media|solution-media)/[1-9][0-9]*', value):
@@ -25,6 +25,14 @@ def clean_rich(value):
     def attribute(tag, attr, text):
         if attr in {'src', 'href'}:
             return text if safe_url(text) else None
+        if attr == 'style' and tag in {'span', 'mark'}:
+            declarations = [item.strip() for item in text.split(';') if item.strip()]
+            safe_styles = []
+            for declaration in declarations:
+                color = re.fullmatch(r'(?:color|background-color):\s*(#[0-9a-f]{3,8}|rgba?\([0-9.,%\s]+\)|hsla?\([0-9.,%\s]+\)|[a-z]{1,20})', declaration, re.IGNORECASE)
+                if color and not re.search(r'url|var|expression', color.group(1), re.IGNORECASE):
+                    safe_styles.append(declaration)
+            return '; '.join(safe_styles) if safe_styles else None
         if attr == 'style' and tag in {'p', 'h1', 'h2', 'h3', 'figure', 'img', 'video'}:
             declarations = [item.strip() for item in text.split(';') if item.strip()]
             safe_styles = []
