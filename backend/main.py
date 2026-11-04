@@ -40,7 +40,8 @@ DB_PATH = Path(DB_URL.removeprefix("sqlite:///"))
 if not DB_PATH.is_absolute():
     DB_PATH = (ROOT / DB_PATH).resolve()
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-MAX_BYTES = int(os.getenv("MAX_UPLOAD_MB", "100")) * 1024 * 1024
+MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "5120"))
+MAX_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 SECRET = os.getenv("SECRET_KEY", "")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
@@ -456,7 +457,8 @@ async def csrf_guard(request: Request, call_next):
 
 @app.get("/api/admin/me")
 def admin_me(request: Request):
-    return {"admin": is_admin(request)}
+    admin = is_admin(request)
+    return {"admin": admin, **({"max_upload_mb": MAX_UPLOAD_MB} if admin else {})}
 
 
 @app.get("/api/admin/data")
@@ -801,7 +803,7 @@ async def admin_upload(request: Request,file: UploadFile=File(...), kind: str=Fo
         write("INSERT INTO icon_objects(object_key,filename) VALUES(?,?)", (key,name))
         return {"object_key":key,"filename":name}
     allowed={".zip",".exe",".msi",".dmg",".pkg",".appimage",".deb",".rpm",".7z",".tar",".gz",".pdf",".png",".jpg",".jpeg",".webp",".gif",".mp4",".webm",".mov",".txt",".md",".docx",".xlsx",".pptx",".json",".crx"}
-    key,name=await save_upload(file,allowed,100)
+    key,name=await save_upload(file,allowed,MAX_UPLOAD_MB)
     write("INSERT INTO uploaded_objects VALUES(?,?)",(key,name))
     return {"object_key":key,"filename":name}
 

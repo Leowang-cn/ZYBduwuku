@@ -4,11 +4,16 @@ import {Button, Card, FileInput, Group, Select, SimpleGrid, Stack, Text, Textare
 type D = Record<string, any>;
 type UploadState = {percent: number; status: string};
 
-export function ReleaseEditor({release, platforms, onUpdate, upload, uploadState}: {
-  release: D; platforms: string[]; onUpdate: (update: (release: D) => D) => void;
+export function formatUploadLimit(mb: number) {
+  return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
+}
+
+export function ReleaseEditor({release, platforms, onUpdate, upload, uploadState, maxUploadMb = 5120}: {
+  release: D; platforms: string[]; maxUploadMb?: number; onUpdate: (update: (release: D) => D) => void;
   upload: (file: File) => Promise<D>; uploadState?: UploadState;
 }) {
   const [packagePlatform, setPackagePlatform] = useState<string | null>(null);
+  const [sizeError, setSizeError] = useState('');
   const selectedPlatform = packagePlatform || (platforms.length === 1 ? platforms[0] : '');
   const patch = (fields: D) => onUpdate(current => ({...current, ...fields}));
   const updateDownload = (index: number, fields: D) => onUpdate(current => ({...current, deliverables: (current.deliverables || []).map((item: D, i: number) => i === index ? {...item, ...fields} : item)}));
@@ -30,13 +35,16 @@ export function ReleaseEditor({release, platforms, onUpdate, upload, uploadState
     <Text size="sm" fw={600} mb="xs">为此版本添加不同端的安装包</Text>
     <Select label="安装包端类型" placeholder="先选择 Windows、macOS 等端类型，再上传安装包" data={platforms} value={selectedPlatform || null} onChange={setPackagePlatform} disabled={uploadState?.status === 'uploading'}/>
     {!platforms.length && <Text size="xs" c="orange" mt="xs">请先在上方软件信息中选择适用平台。</Text>}
-    <FileInput label="上传该端安装包" description="每上传一个文件，新增一项；可切换端类型后继续上传。" mt="sm" placeholder="选择文件（最大 100 MB）" clearable disabled={!platforms.includes(selectedPlatform) || uploadState?.status === 'uploading'} onChange={async file => {
+    <FileInput label="上传该端安装包" description="每上传一个文件，新增一项；可切换端类型后继续上传。" mt="sm" placeholder={`选择文件（最大 ${formatUploadLimit(maxUploadMb)}）`} clearable disabled={!platforms.includes(selectedPlatform) || uploadState?.status === 'uploading'} onChange={async file => {
+      setSizeError('');
       if (!file) return;
+      if (file.size > maxUploadMb * 1024 * 1024) { setSizeError(`${file.name} 超过 ${formatUploadLimit(maxUploadMb)}，无法上传`); return; }
       try {
         const result = await upload(file);
         onUpdate(current => ({...current, deliverables: [...(current.deliverables || []), {kind: 'file', label: '下载', filename: result.filename, object_key: result.object_key, platform: selectedPlatform, size: `${(file.size / 1024 / 1024).toFixed(2)} MB`, updated_at: today()}]}));
       } catch { /* The shared upload handler displays the error. */ }
     }}/>
+    {sizeError && <Text size="sm" role="alert" c="red">{sizeError}</Text>}
     {uploadState && <Text size="sm" role="status" c={uploadState.status === 'error' ? 'red' : uploadState.status === 'done' ? 'green' : 'blue'}>{uploadState.status === 'uploading' ? `正在上传：${uploadState.percent}%` : uploadState.status === 'done' ? '上传完成，请保存软件' : '上传失败，请重试'}</Text>}
     </Card>
     <Button type="button" size="xs" variant="light" onClick={() => onUpdate(current => ({...current, deliverables: [...(current.deliverables || []), {kind: 'url', label: '打开网址', url: '', platform: platforms.length === 1 ? platforms[0] : '', size: '', updated_at: today()}]}))}>添加下载地址</Button>

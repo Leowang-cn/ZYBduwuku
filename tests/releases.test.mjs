@@ -16,7 +16,8 @@ try {
     await fs.writeFile(path.join(temporary, `${name}.mjs`), ts.transpileModule(source, {compilerOptions: {jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022}}).outputText);
   }
   const {groupVersions, ReleaseDownloads} = await import(pathToFileURL(path.join(temporary, 'releases.mjs')));
-  const {ReleaseEditor} = await import(pathToFileURL(path.join(temporary, 'release-editor.mjs')));
+  const editorModule = await import(pathToFileURL(path.join(temporary, 'release-editor.mjs')));
+  const {ReleaseEditor} = editorModule;
   const render = (Component, props) => renderToStaticMarkup(React.createElement(MantineProvider, {}, React.createElement(Component, props)));
   const releases = [
     {version: '11.1.1', platform: 'Windows', size: '10 MB', created_at: '2026-12-20', deliverables: [{id: 1, kind: 'file', filename: 'long-file.exe'}]},
@@ -63,6 +64,15 @@ try {
   test('admin editor provides metadata per download and visible upload progress', () => {
     const html = render(ReleaseEditor, {release: releases[0], platforms: ['Windows', 'macOS'], onUpdate() {}, upload() {}, uploadState: {status: 'uploading', percent: 42}});
     for (const label of ['端类型', '包大小（可选）', '更新时间', '正在上传：42%', '添加下载地址', '为此版本添加不同端的安装包', '安装包端类型', '上传该端安装包']) assert.ok(html.includes(label));
+    assert.ok(html.includes('最大 5 GB'));
+  });
+  test('upload limit label follows server configuration', () => {
+    const {formatUploadLimit} = editorModule;
+    assert.equal(formatUploadLimit(5120), '5 GB');
+    assert.equal(formatUploadLimit(2048), '2 GB');
+    assert.equal(formatUploadLimit(300), '300 MB');
+    const html = render(ReleaseEditor, {release: releases[0], platforms: ['Windows'], onUpdate() {}, upload() {}, maxUploadMb: 300});
+    assert.ok(html.includes('最大 300 MB'));
   });
 } finally {
   await fs.rm(temporary, {recursive: true, force: true});

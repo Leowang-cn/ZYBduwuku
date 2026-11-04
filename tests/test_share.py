@@ -94,5 +94,26 @@ class ShareMetaTests(unittest.TestCase):
         self.assertEqual("no-cache", response.headers["cache-control"])
 
 
+
+class UploadLimitTests(unittest.TestCase):
+    def test_default_package_limit_is_5_gb(self):
+        import importlib, sys
+        server = MagicMock()
+        server.streamable_http_app.return_value = FastAPI()
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"APP_ENV": "test", "SECRET_KEY": "limit-secret", "DATABASE_URL": f"sqlite:///{temp}/app.sqlite", "DATA_DIR": temp, "UPLOAD_STAGING_DIR": f"{temp}/staging"}), patch("backend.mcp_server.create_server", return_value=server), patch("dotenv.load_dotenv", return_value=False):
+            os.environ.pop("MAX_UPLOAD_MB", None)
+            previous = sys.modules.pop("backend.main", None)
+            try:
+                main = importlib.import_module("backend.main")
+                self.assertEqual(5120, main.MAX_UPLOAD_MB)
+                self.assertEqual(5 * 1024 ** 3, main.MAX_BYTES)
+                client = TestClient(main.app)
+                self.assertEqual({"admin": False}, client.get("/api/admin/me").json())
+            finally:
+                sys.modules.pop("backend.main", None)
+                if previous is not None:
+                    sys.modules["backend.main"] = previous
+
+
 if __name__ == "__main__":
     unittest.main()
